@@ -14,6 +14,7 @@ struct Request {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct Response {
     id: u64,
     result: Option<Value>,
@@ -46,6 +47,7 @@ async fn read_response<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Resu
 }
 
 struct TestServer {
+    #[allow(dead_code)]
     child: tokio::process::Child,
     port: u16,
 }
