@@ -32,9 +32,18 @@ mkfs.ext4 -F "$ROOTFS"
 mkdir -p "$MOUNT_DIR"
 sudo mount -o loop "$ROOTFS" "$MOUNT_DIR"
 
+# Ensure cleanup on exit
+cleanup() {
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+        sudo umount "$MOUNT_DIR"
+    fi
+    [ -d "$MOUNT_DIR" ] && rmdir "$MOUNT_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # Bootstrap Alpine
 MIRROR="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}"
-sudo apk -X "${MIRROR}/main" -U --allow-untrusted --root "$MOUNT_DIR" \
+sudo apk -X "${MIRROR}/main" -U --root "$MOUNT_DIR" \
     --initdb add alpine-base
 
 # Configure repos
@@ -70,8 +79,9 @@ echo "agentbox" | sudo tee "${MOUNT_DIR}/etc/hostname"
 echo "ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100" | \
     sudo tee -a "${MOUNT_DIR}/etc/inittab"
 
-# Cleanup
+# Unmount (trap handles cleanup on failure, but do it explicitly on success)
 sudo umount "$MOUNT_DIR"
 rmdir "$MOUNT_DIR"
+trap - EXIT
 
 echo "Rootfs built: $ROOTFS"

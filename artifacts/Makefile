@@ -20,7 +20,7 @@ $(OUTPUT_DIR)/vmlinux: $(OUTPUT_DIR)
 # === Rootfs ===
 rootfs: $(OUTPUT_DIR)/rootfs.ext4
 
-$(OUTPUT_DIR)/rootfs.ext4: guest-agent $(OUTPUT_DIR)
+$(OUTPUT_DIR)/rootfs.ext4: $(OUTPUT_DIR)/guest-agent $(OUTPUT_DIR)
 	./rootfs/build.sh $(ALPINE_VERSION) $(ARCH) $(OUTPUT_DIR) $(ROOTFS_SIZE_MB)
 
 # === Guest Agent ===
@@ -32,7 +32,7 @@ $(OUTPUT_DIR)/guest-agent: $(OUTPUT_DIR)
 # === Snapshot ===
 snapshot: $(OUTPUT_DIR)/snapshot/vmstate.bin
 
-$(OUTPUT_DIR)/snapshot/vmstate.bin: kernel rootfs $(OUTPUT_DIR)
+$(OUTPUT_DIR)/snapshot/vmstate.bin: $(OUTPUT_DIR)/vmlinux $(OUTPUT_DIR)/rootfs.ext4 $(OUTPUT_DIR)
 	./snapshot/bake.sh $(ARCH) $(OUTPUT_DIR)
 
 # === Clean ===

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 ARCH="$1"
 OUTPUT_DIR="$2"
 
@@ -21,8 +24,8 @@ case "$ARCH" in
 esac
 
 # Build (static binary with musl)
-cd ../../crates/guest-agent
-cargo build --release --target "$TARGET"
-cp "../../target/${TARGET}/release/guest-agent" "$BINARY"
+CRATE_DIR="${REPO_ROOT}/crates/guest-agent"
+cargo build --release --target "$TARGET" --manifest-path "${CRATE_DIR}/Cargo.toml"
+cp "${REPO_ROOT}/target/${TARGET}/release/guest-agent" "$BINARY"
 
 echo "Guest agent built: $BINARY"

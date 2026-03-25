@@ -45,7 +45,7 @@ $(OUTPUT_DIR)/vmlinux: $(OUTPUT_DIR)
 # === Rootfs ===
 rootfs: $(OUTPUT_DIR)/rootfs.ext4
 
-$(OUTPUT_DIR)/rootfs.ext4: guest-agent $(OUTPUT_DIR)
+$(OUTPUT_DIR)/rootfs.ext4: $(OUTPUT_DIR)/guest-agent $(OUTPUT_DIR)
 	./rootfs/build.sh $(ALPINE_VERSION) $(ARCH) $(OUTPUT_DIR) $(ROOTFS_SIZE_MB)
 
 # === Guest Agent ===
@@ -57,7 +57,7 @@ $(OUTPUT_DIR)/guest-agent: $(OUTPUT_DIR)
 # === Snapshot ===
 snapshot: $(OUTPUT_DIR)/snapshot/vmstate.bin
 
-$(OUTPUT_DIR)/snapshot/vmstate.bin: kernel rootfs $(OUTPUT_DIR)
+$(OUTPUT_DIR)/snapshot/vmstate.bin: $(OUTPUT_DIR)/vmlinux $(OUTPUT_DIR)/rootfs.ext4 $(OUTPUT_DIR)
 	./snapshot/bake.sh $(ARCH) $(OUTPUT_DIR)
 
 # === Clean ===
@@ -78,6 +78,13 @@ OUTPUT_DIR="$3"
 MAJOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d. -f1-2)
 SRC_DIR="build/linux-${KERNEL_VERSION}"
 VMLINUX="${OUTPUT_DIR}/vmlinux"
+
+# Map to kernel ARCH name
+case "$ARCH" in
+    x86_64)  KERNEL_ARCH="x86_64" ;;
+    aarch64) KERNEL_ARCH="arm64" ;;
+    *) echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
+esac
 
 if [ -f "$VMLINUX" ]; then
     echo "Kernel already built: $VMLINUX"
@@ -102,7 +109,7 @@ fi
 cp "$KCONFIG" "${SRC_DIR}/.config"
 
 # Build
-make -C "$SRC_DIR" -j"$(nproc)" vmlinux
+make -C "$SRC_DIR" ARCH="$KERNEL_ARCH" -j"$(nproc)" vmlinux
 
 # Copy output
 cp "${SRC_DIR}/vmlinux" "$VMLINUX"
@@ -125,8 +132,8 @@ CONFIG_VIRTIO_MMIO=y
 CONFIG_VIRTIO_BLK=y
 CONFIG_VIRTIO_NET=y
 CONFIG_VIRTIO_CONSOLE=y
-CONFIG_VHOST_VSOCK=y
-CONFIG_VIRTIO_VSOCK=y
+CONFIG_VSOCK=y
+CONFIG_VIRTIO_TRANSPORT_VSOCK=y
 
 # Filesystem
 CONFIG_EXT4_FS=y
@@ -198,9 +205,18 @@ mkfs.ext4 -F "$ROOTFS"
 mkdir -p "$MOUNT_DIR"
 sudo mount -o loop "$ROOTFS" "$MOUNT_DIR"
 
+# Ensure cleanup on exit
+cleanup() {
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+        sudo umount "$MOUNT_DIR"
+    fi
+    [ -d "$MOUNT_DIR" ] && rmdir "$MOUNT_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # Bootstrap Alpine
 MIRROR="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}"
-sudo apk -X "${MIRROR}/main" -U --allow-untrusted --root "$MOUNT_DIR" \
+sudo apk -X "${MIRROR}/main" -U --root "$MOUNT_DIR" \
     --initdb add alpine-base
 
 # Configure repos
@@ -236,9 +252,10 @@ echo "agentbox" | sudo tee "${MOUNT_DIR}/etc/hostname"
 echo "ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100" | \
     sudo tee -a "${MOUNT_DIR}/etc/inittab"
 
-# Cleanup
+# Unmount (trap handles cleanup on failure, but do it explicitly on success)
 sudo umount "$MOUNT_DIR"
 rmdir "$MOUNT_DIR"
+trap - EXIT
 
 echo "Rootfs built: $ROOTFS"
 ```
@@ -266,6 +283,9 @@ depend() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 ARCH="$1"
 OUTPUT_DIR="$2"
 
@@ -286,9 +306,9 @@ case "$ARCH" in
 esac
 
 # Build (static binary with musl)
-cd ../../crates/guest-agent
-cargo build --release --target "$TARGET"
-cp "../../target/${TARGET}/release/guest-agent" "$BINARY"
+CRATE_DIR="${REPO_ROOT}/crates/guest-agent"
+cargo build --release --target "$TARGET" --manifest-path "${CRATE_DIR}/Cargo.toml"
+cp "${REPO_ROOT}/target/${TARGET}/release/guest-agent" "$BINARY"
 
 echo "Guest agent built: $BINARY"
 ```
@@ -298,6 +318,11 @@ echo "Guest agent built: $BINARY"
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <arch> <output-dir>"
+    exit 1
+fi
 
 ARCH="$1"
 OUTPUT_DIR="$2"
@@ -325,56 +350,67 @@ VSOCK_SOCK="${WORK_DIR}/vsock.sock"
 # Start Firecracker (fresh boot)
 firecracker --api-sock "${API_SOCK}" &
 FC_PID=$!
+
+# Ensure cleanup on exit
+cleanup() {
+    kill "$FC_PID" 2>/dev/null || true
+    wait "$FC_PID" 2>/dev/null || true
+    rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
 sleep 1
 
 # Configure VM via API
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/boot-source" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/boot-source" \
     -H "Content-Type: application/json" \
     -d "{\"kernel_image_path\": \"$(realpath "$VMLINUX")\", \"boot_args\": \"console=ttyS0 reboot=k panic=1 pci=off\"}"
 
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/drives/rootfs" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/drives/rootfs" \
     -H "Content-Type: application/json" \
     -d "{\"drive_id\": \"rootfs\", \"path_on_host\": \"$(realpath "${WORK_DIR}/rootfs.ext4")\", \"is_root_device\": true, \"is_read_only\": false}"
 
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/vsock" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/vsock" \
     -H "Content-Type: application/json" \
     -d "{\"guest_cid\": 3, \"uds_path\": \"$(realpath "$VSOCK_SOCK")\"}"
 
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/machine-config" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/machine-config" \
     -H "Content-Type: application/json" \
     -d '{"vcpu_count": 2, "mem_size_mib": 2048}'
 
 # Start the VM
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/actions" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/actions" \
     -H "Content-Type: application/json" \
     -d '{"action_type": "InstanceStart"}'
 
 # Wait for guest agent to be ready
 echo "Waiting for guest agent..."
+AGENT_READY=false
 for i in $(seq 1 60); do
     if echo '{"id":1,"method":"ping"}' | timeout 2 socat - "UNIX-CONNECT:${VSOCK_SOCK}" 2>/dev/null | grep -q "ok"; then
         echo "Guest agent ready after ${i}s"
+        AGENT_READY=true
         break
     fi
     sleep 1
 done
 
+if [ "$AGENT_READY" != "true" ]; then
+    echo "ERROR: Guest agent did not become ready within 60s"
+    exit 1
+fi
+
 # Pause the VM
-curl --unix-socket "$API_SOCK" -s -X PATCH "http://localhost/vm" \
+curl --unix-socket "$API_SOCK" -sf -X PATCH "http://localhost/vm" \
     -H "Content-Type: application/json" \
     -d '{"state": "Paused"}'
 
 # Take snapshot
-curl --unix-socket "$API_SOCK" -s -X PUT "http://localhost/snapshot/create" \
+curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/snapshot/create" \
     -H "Content-Type: application/json" \
     -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"$(realpath "${SNAPSHOT_DIR}/vmstate.bin")\", \"mem_file_path\": \"$(realpath "${SNAPSHOT_DIR}/memory.bin")\"}"
 
 echo "Snapshot created at: ${SNAPSHOT_DIR}"
-
-# Cleanup
-kill $FC_PID 2>/dev/null || true
-wait $FC_PID 2>/dev/null || true
-rm -rf "$WORK_DIR"
 ```
 
 Note: The snapshot bake script uses `socat` to ping the guest agent via vsock.
