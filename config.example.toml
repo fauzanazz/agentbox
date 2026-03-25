@@ -1,0 +1,24 @@
+[daemon]
+listen = "127.0.0.1:8080"
+log_level = "info"
+
+[vm]
+firecracker_bin = "/usr/local/bin/firecracker"
+kernel_path = "/var/lib/agentbox/vmlinux"
+rootfs_path = "/var/lib/agentbox/rootfs.ext4"
+snapshot_path = "/var/lib/agentbox/snapshot"
+
+[vm.defaults]
+memory_mb = 2048
+vcpus = 2
+network = false
+timeout_secs = 3600
+
+[pool]
+min_size = 2
+max_size = 10
+idle_timeout_secs = 3600
+
+[guest]
+vsock_port = 5000
+ping_timeout_ms = 5000

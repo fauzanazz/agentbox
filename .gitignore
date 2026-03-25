@@ -1,0 +1,7 @@
+target/
+*.swp
+.env
+artifacts/output/
+
+# Agent orchestrator state (auto-generated)
+.agent-state/
