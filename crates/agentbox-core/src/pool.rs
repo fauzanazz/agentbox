@@ -18,11 +18,17 @@ pub struct Pool {
 
 impl Pool {
     pub fn new(
-        _config: PoolConfig,
-        _guest_config: GuestConfig,
-        _vm_manager: Arc<VmManager>,
+        config: PoolConfig,
+        guest_config: GuestConfig,
+        vm_manager: Arc<VmManager>,
     ) -> Self {
-        todo!()
+        Self {
+            config,
+            guest_config,
+            vm_manager,
+            available: Arc::new(Mutex::new(VecDeque::new())),
+            active: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub async fn start(&self) -> crate::error::Result<tokio::task::JoinHandle<()>> {

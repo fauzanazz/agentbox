@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct AgentBoxConfig {
     pub daemon: DaemonConfig,
     pub vm: VmConfig,
@@ -10,12 +11,14 @@ pub struct AgentBoxConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct DaemonConfig {
     pub listen: String,
     pub log_level: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct VmConfig {
     pub firecracker_bin: PathBuf,
     pub kernel_path: PathBuf,
@@ -25,6 +28,7 @@ pub struct VmConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct VmDefaults {
     pub memory_mb: u32,
     pub vcpus: u32,
@@ -33,6 +37,7 @@ pub struct VmDefaults {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct PoolConfig {
     pub min_size: usize,
     pub max_size: usize,
@@ -40,6 +45,7 @@ pub struct PoolConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct GuestConfig {
     pub vsock_port: u32,
     pub ping_timeout_ms: u64,
@@ -92,17 +98,6 @@ impl Default for GuestConfig {
         Self {
             vsock_port: 5000,
             ping_timeout_ms: 5000,
-        }
-    }
-}
-
-impl Default for AgentBoxConfig {
-    fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            vm: VmConfig::default(),
-            pool: PoolConfig::default(),
-            guest: GuestConfig::default(),
         }
     }
 }
