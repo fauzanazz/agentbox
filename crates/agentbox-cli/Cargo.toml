@@ -1,0 +1,18 @@
+[package]
+name = "agentbox-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agentbox"
+path = "src/main.rs"
+
+[dependencies]
+agentbox-core = { path = "../agentbox-core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
