@@ -39,25 +39,25 @@ $(OUTPUT_DIR):
 # === Kernel ===
 kernel: $(OUTPUT_DIR)/vmlinux
 
-$(OUTPUT_DIR)/vmlinux: $(OUTPUT_DIR)
+$(OUTPUT_DIR)/vmlinux: | $(OUTPUT_DIR)
 	./kernel/build.sh $(KERNEL_VERSION) $(ARCH) $(OUTPUT_DIR)
 
 # === Rootfs ===
 rootfs: $(OUTPUT_DIR)/rootfs.ext4
 
-$(OUTPUT_DIR)/rootfs.ext4: $(OUTPUT_DIR)/guest-agent $(OUTPUT_DIR)
+$(OUTPUT_DIR)/rootfs.ext4: $(OUTPUT_DIR)/guest-agent | $(OUTPUT_DIR)
 	./rootfs/build.sh $(ALPINE_VERSION) $(ARCH) $(OUTPUT_DIR) $(ROOTFS_SIZE_MB)
 
 # === Guest Agent ===
 guest-agent: $(OUTPUT_DIR)/guest-agent
 
-$(OUTPUT_DIR)/guest-agent: $(OUTPUT_DIR)
+$(OUTPUT_DIR)/guest-agent: | $(OUTPUT_DIR)
 	./guest-agent/build.sh $(ARCH) $(OUTPUT_DIR)
 
 # === Snapshot ===
 snapshot: $(OUTPUT_DIR)/snapshot/vmstate.bin
 
-$(OUTPUT_DIR)/snapshot/vmstate.bin: $(OUTPUT_DIR)/vmlinux $(OUTPUT_DIR)/rootfs.ext4 $(OUTPUT_DIR)
+$(OUTPUT_DIR)/snapshot/vmstate.bin: $(OUTPUT_DIR)/vmlinux $(OUTPUT_DIR)/rootfs.ext4 | $(OUTPUT_DIR)
 	./snapshot/bake.sh $(ARCH) $(OUTPUT_DIR)
 
 # === Clean ===
@@ -133,7 +133,7 @@ CONFIG_VIRTIO_BLK=y
 CONFIG_VIRTIO_NET=y
 CONFIG_VIRTIO_CONSOLE=y
 CONFIG_VSOCK=y
-CONFIG_VIRTIO_TRANSPORT_VSOCK=y
+CONFIG_VIRTIO_VSOCK=y
 
 # Filesystem
 CONFIG_EXT4_FS=y
