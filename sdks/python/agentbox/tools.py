@@ -120,7 +120,10 @@ def handle_tool_call(sandbox: Sandbox, tool_call: dict) -> dict:
         missing = [k for k in ("path", "content") if k not in args]
         if missing:
             return {"error": f"Missing required parameters: {', '.join(missing)}"}
-        sandbox.upload_content(args["content"].encode(), args["path"])
+        content = args["content"]
+        if not isinstance(content, str):
+            return {"error": "Parameter 'content' must be a string"}
+        sandbox.upload_content(content.encode(), args["path"])
         return {"status": "written", "path": args["path"]}
     elif name == "read_file":
         if "path" not in args:

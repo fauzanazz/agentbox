@@ -152,3 +152,15 @@ def test_handle_tool_call_write_file_missing_params():
     })
     assert "error" in result
     assert "content" in result["error"]
+
+
+def test_handle_tool_call_write_file_non_string_content():
+    sandbox = MagicMock()
+
+    result = handle_tool_call(sandbox, {
+        "name": "write_file",
+        "input": {"path": "/workspace/test.py", "content": 12345},
+    })
+    assert "error" in result
+    assert "content" in result["error"]
+    sandbox.upload_content.assert_not_called()

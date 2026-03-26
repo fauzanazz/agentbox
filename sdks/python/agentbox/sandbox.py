@@ -122,11 +122,12 @@ class Sandbox:
     def __enter__(self) -> Sandbox:
         return self
 
-    def __exit__(self, *args) -> None:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         try:
             self.destroy()
         except Exception:
-            pass
+            if exc_type is None:
+                raise
 
     # === LLM Tool Definitions ===
 

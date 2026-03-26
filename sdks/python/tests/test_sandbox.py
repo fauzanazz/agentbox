@@ -168,16 +168,21 @@ def test_sandbox_context_manager():
 
 
 @respx.mock
-def test_sandbox_exit_suppresses_destroy_errors():
+def test_sandbox_exit_raises_destroy_errors_on_clean_exit():
     respx.post("http://localhost:8080/sandboxes").mock(
         return_value=httpx.Response(200, json={"id": "sb-err"})
     )
     respx.delete("http://localhost:8080/sandboxes/sb-err").mock(
         return_value=httpx.Response(500, json={"error": "internal"})
     )
-    # Should not raise even though destroy fails
-    with Sandbox.create() as sb:
-        assert sb.id == "sb-err"
+    # Destroy error should propagate when with-block exits cleanly
+    try:
+        with Sandbox.create() as sb:
+            assert sb.id == "sb-err"
+    except httpx.HTTPStatusError:
+        pass  # Expected: destroy error propagates
+    else:
+        raise AssertionError("Expected HTTPStatusError from failed destroy")
 
 
 @respx.mock

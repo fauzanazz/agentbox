@@ -1,36 +1,21 @@
-# Progress — FAU-74 Python SDK (Revision)
+# Progress — FAU-74 Python SDK (Revision 2)
 
 ## Accomplished
 
-Addressed all 6 review violations from cubic-dev-ai:
+Addressed remaining review feedback from cubic-dev-ai's second review:
 
-1. **`__exit__` error suppression** (`sandbox.py`) — Wrapped `self.destroy()` in try/except so destroy errors don't mask exceptions raised inside `with` blocks.
+1. **P1: `__exit__` conditional error suppression** (`sandbox.py`) — Changed `__exit__` to only suppress destroy errors when there's an active user exception. On clean exit, destroy errors now propagate so resource leaks are surfaced. Updated test `test_sandbox_exit_raises_destroy_errors_on_clean_exit` accordingly.
 
-2. **JSON parsing guard** (`tools.py`) — Wrapped `json.loads(args)` in try/except for `JSONDecodeError`/`TypeError`, returning a clear error dict instead of crashing.
-
-3. **Args validation before dispatch** (`tools.py`) — Changed `not args` to `not isinstance(args, dict)` and added per-tool required parameter checks before accessing keys.
-
-4. **POST body assertion in test** (`test_sandbox.py`) — `test_sandbox_create_with_options` now verifies `memory_mb`, `vcpus`, `network`, and `timeout` are sent in the POST body.
-
-5. **README context manager** (`README.md`) — LLM integration example now uses `with Sandbox.create() as sb:` to prevent sandbox leaks.
-
-6. **Design doc updates** (`docs/designs/python-sdk.md`) — Applied matching fixes for `__exit__` and `handle_tool_call` in the design doc.
-
-Added new tests:
-- `test_sandbox_exit_suppresses_destroy_errors`
-- `test_sandbox_exit_does_not_mask_user_exception`
-- `test_handle_tool_call_invalid_json_args`
-- `test_handle_tool_call_missing_required_params`
-- `test_handle_tool_call_write_file_missing_params`
+2. **P2: `write_file` content type validation** (`tools.py`) — Added `isinstance(content, str)` check before calling `.encode()`, returning a clear error dict for non-string content. Added `test_handle_tool_call_write_file_non_string_content` test.
 
 ## Test Results
 
-41/41 tests passing.
+42/42 tests passing.
 
 ## What's Left
 
-Nothing — all review violations addressed, all tests pass.
+Nothing — all review violations from both review rounds addressed, all tests pass.
 
 ## Decisions
 
-- Empty dict `{}` as tool `input` is correctly caught by the existing `or` chain (falsy) and reported as unparseable — this is acceptable behavior since a valid tool call always has at least one required parameter.
+- `__exit__` uses `if exc_type is None: raise` pattern — destroy errors propagate on clean exit but are suppressed when a user exception is active, preventing masking.
