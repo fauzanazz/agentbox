@@ -117,3 +117,38 @@ def test_handle_tool_call_invalid():
 
     result = handle_tool_call(sandbox, {})
     assert "error" in result
+
+
+def test_handle_tool_call_invalid_json_args():
+    sandbox = MagicMock()
+
+    result = handle_tool_call(sandbox, {
+        "function": {
+            "name": "execute_code",
+            "arguments": "not valid json{{{",
+        }
+    })
+    assert "error" in result
+    assert "Invalid JSON" in result["error"]
+
+
+def test_handle_tool_call_missing_required_params():
+    sandbox = MagicMock()
+
+    result = handle_tool_call(sandbox, {
+        "name": "execute_code",
+        "input": {"wrong_key": "value"},
+    })
+    assert "error" in result
+    assert "Missing required parameter" in result["error"]
+
+
+def test_handle_tool_call_write_file_missing_params():
+    sandbox = MagicMock()
+
+    result = handle_tool_call(sandbox, {
+        "name": "write_file",
+        "input": {"path": "/workspace/test.py"},
+    })
+    assert "error" in result
+    assert "content" in result["error"]

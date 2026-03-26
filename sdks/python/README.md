@@ -41,11 +41,10 @@ asyncio.run(main())
 ```python
 from agentbox import Sandbox
 
-sb = Sandbox.create()
+with Sandbox.create() as sb:
+    # Get tool definitions for your LLM
+    tools = sb.tool_definitions(format="openai")   # or "anthropic"
 
-# Get tool definitions for your LLM
-tools = sb.tool_definitions(format="openai")   # or "anthropic"
-
-# After LLM returns a tool call, execute it
-result = sb.handle_tool_call(tool_call)
+    # After LLM returns a tool call, execute it
+    result = sb.handle_tool_call(tool_call)
 ```

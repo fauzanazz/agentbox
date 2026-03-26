@@ -123,7 +123,10 @@ class Sandbox:
         return self
 
     def __exit__(self, *args) -> None:
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
     # === LLM Tool Definitions ===
 

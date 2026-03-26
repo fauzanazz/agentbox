@@ -99,12 +99,17 @@ def handle_tool_call(sandbox: Sandbox, tool_call: dict) -> dict:
     )
 
     if isinstance(args, str):
-        args = json.loads(args)
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            return {"error": "Invalid JSON in tool call arguments"}
 
-    if not name or not args:
+    if not name or not isinstance(args, dict):
         return {"error": "Could not parse tool call"}
 
     if name == "execute_code":
+        if "command" not in args:
+            return {"error": "Missing required parameter: command"}
         result = sandbox.exec(args["command"])
         return {
             "stdout": result.stdout,
@@ -112,9 +117,14 @@ def handle_tool_call(sandbox: Sandbox, tool_call: dict) -> dict:
             "exit_code": result.exit_code,
         }
     elif name == "write_file":
+        missing = [k for k in ("path", "content") if k not in args]
+        if missing:
+            return {"error": f"Missing required parameters: {', '.join(missing)}"}
         sandbox.upload_content(args["content"].encode(), args["path"])
         return {"status": "written", "path": args["path"]}
     elif name == "read_file":
+        if "path" not in args:
+            return {"error": "Missing required parameter: path"}
         content = sandbox.download(args["path"])
         return {"content": content.decode("utf-8", errors="replace")}
     else:

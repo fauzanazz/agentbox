@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import respx
 
@@ -18,11 +20,17 @@ def test_sandbox_create():
 
 @respx.mock
 def test_sandbox_create_with_options():
-    respx.post("http://localhost:8080/sandboxes").mock(
+    route = respx.post("http://localhost:8080/sandboxes").mock(
         return_value=httpx.Response(200, json={"id": "sb-custom"})
     )
     sb = Sandbox.create(memory_mb=4096, vcpus=4, network=True, timeout=7200)
     assert sb.id == "sb-custom"
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["memory_mb"] == 4096
+    assert body["vcpus"] == 4
+    assert body["network"] is True
+    assert body["timeout"] == 7200
     sb._client.close()
 
 
@@ -157,3 +165,34 @@ def test_sandbox_context_manager():
     with Sandbox.create() as sb:
         assert sb.id == "sb-ctx"
     # destroy was called automatically via __exit__
+
+
+@respx.mock
+def test_sandbox_exit_suppresses_destroy_errors():
+    respx.post("http://localhost:8080/sandboxes").mock(
+        return_value=httpx.Response(200, json={"id": "sb-err"})
+    )
+    respx.delete("http://localhost:8080/sandboxes/sb-err").mock(
+        return_value=httpx.Response(500, json={"error": "internal"})
+    )
+    # Should not raise even though destroy fails
+    with Sandbox.create() as sb:
+        assert sb.id == "sb-err"
+
+
+@respx.mock
+def test_sandbox_exit_does_not_mask_user_exception():
+    respx.post("http://localhost:8080/sandboxes").mock(
+        return_value=httpx.Response(200, json={"id": "sb-mask"})
+    )
+    respx.delete("http://localhost:8080/sandboxes/sb-mask").mock(
+        return_value=httpx.Response(500, json={"error": "internal"})
+    )
+    # The user's ValueError should propagate, not be masked by destroy failure
+    try:
+        with Sandbox.create() as sb:
+            raise ValueError("user error")
+    except ValueError as e:
+        assert str(e) == "user error"
+    else:
+        raise AssertionError("Expected ValueError to propagate")
