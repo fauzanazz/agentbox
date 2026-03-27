@@ -216,3 +216,94 @@ impl IntoResponse for AppError {
         (status, Json(serde_json::json!({"error": message}))).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn test_app() -> axum::Router {
+        use agentbox_core::config::AgentBoxConfig;
+        use agentbox_core::pool::Pool;
+        use agentbox_core::vm::VmManager;
+
+        let vm_manager = Arc::new(VmManager::new(agentbox_core::config::VmConfig::default()));
+        let pool = Arc::new(Pool::new(
+            agentbox_core::config::PoolConfig::default(),
+            agentbox_core::config::GuestConfig::default(),
+            vm_manager,
+        ));
+        let state = Arc::new(crate::state::AppState::new(
+            pool,
+            Arc::new(AgentBoxConfig::default()),
+        ));
+        crate::routes::build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_sandbox_returns_404() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes/nonexistent")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_destroy_nonexistent_sandbox_returns_404() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes/nonexistent")
+            .method("DELETE")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_exec_nonexistent_sandbox_returns_404() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes/nonexistent/exec")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"command":"ls"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_app_error_not_found_response() {
+        let err = AppError::NotFound("test".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_app_error_bad_request_response() {
+        let err = AppError::BadRequest("bad input".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_app_error_service_unavailable_response() {
+        let err = AppError::ServiceUnavailable("overloaded".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_app_error_internal_response() {
+        let err = AppError::Internal("something broke".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
