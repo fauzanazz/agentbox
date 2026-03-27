@@ -21,7 +21,6 @@ enum ClientMessage {
     #[serde(rename = "exec")]
     Exec {
         command: String,
-        #[allow(dead_code)]
         timeout: Option<u64>,
     },
     #[serde(rename = "stdin")]
@@ -66,99 +65,116 @@ async fn handle_ws(mut socket: WebSocket, sandbox: Arc<Mutex<Sandbox>>) {
         return;
     }
 
+    let mut event_rx: Option<tokio::sync::mpsc::Receiver<ExecEvent>> = None;
     let mut stdin_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>> = None;
+    let mut deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        let text = match socket.recv().await {
-            Some(Ok(Message::Text(t))) => t,
-            Some(Ok(Message::Close(_))) | None => break,
-            _ => continue,
-        };
+        tokio::select! {
+            biased;
 
-        let client_msg: ClientMessage = match serde_json::from_str(&text) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = send_msg(
-                    &mut socket,
-                    &ServerMessage::Error {
-                        message: format!("Invalid message: {e}"),
+            // Forward exec output to WebSocket
+            Some(event) = async {
+                match &mut event_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let is_terminal = matches!(event, ExecEvent::Exit(_) | ExecEvent::Error(_));
+                let msg = match event {
+                    ExecEvent::Stdout(data) => ServerMessage::Stdout {
+                        data: B64.encode(&data),
                     },
-                )
-                .await;
-                continue;
+                    ExecEvent::Stderr(data) => ServerMessage::Stderr {
+                        data: B64.encode(&data),
+                    },
+                    ExecEvent::Exit(code) => ServerMessage::Exit { code },
+                    ExecEvent::Error(msg) => ServerMessage::Error { message: msg },
+                };
+                if send_msg(&mut socket, &msg).await.is_err() {
+                    return;
+                }
+                if is_terminal {
+                    event_rx = None;
+                    stdin_tx = None;
+                    deadline = None;
+                }
             }
-        };
 
-        match client_msg {
-            ClientMessage::Exec { command, .. } => {
-                let sb = sandbox.lock().await;
-                match sb.exec_stream(&command).await {
-                    Ok((mut event_rx, new_stdin_tx)) => {
-                        stdin_tx = Some(new_stdin_tx);
-                        drop(sb);
+            // Enforce exec timeout
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                event_rx = None;
+                stdin_tx = None;
+                deadline = None;
+                let _ = send_msg(&mut socket, &ServerMessage::Error {
+                    message: "Command timed out".into(),
+                }).await;
+            }
 
-                        while let Some(event) = event_rx.recv().await {
-                            let (msg, is_terminal) = match event {
-                                ExecEvent::Stdout(data) => (
-                                    ServerMessage::Stdout {
-                                        data: B64.encode(&data),
-                                    },
-                                    false,
-                                ),
-                                ExecEvent::Stderr(data) => (
-                                    ServerMessage::Stderr {
-                                        data: B64.encode(&data),
-                                    },
-                                    false,
-                                ),
-                                ExecEvent::Exit(code) => {
-                                    stdin_tx = None;
-                                    (ServerMessage::Exit { code }, true)
-                                }
-                                ExecEvent::Error(msg) => {
-                                    stdin_tx = None;
-                                    (ServerMessage::Error { message: msg }, true)
-                                }
-                            };
+            // Process incoming WebSocket messages
+            ws_msg = socket.recv() => {
+                let text = match ws_msg {
+                    Some(Ok(Message::Text(t))) => t,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => continue,
+                };
 
-                            if send_msg(&mut socket, &msg).await.is_err() {
-                                return;
+                let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = send_msg(&mut socket, &ServerMessage::Error {
+                            message: format!("Invalid message: {e}"),
+                        }).await;
+                        continue;
+                    }
+                };
+
+                match client_msg {
+                    ClientMessage::Exec { command, timeout } => {
+                        if event_rx.is_some() {
+                            let _ = send_msg(&mut socket, &ServerMessage::Error {
+                                message: "A command is already running".into(),
+                            }).await;
+                            continue;
+                        }
+                        let sb = sandbox.lock().await;
+                        match sb.exec_stream(&command).await {
+                            Ok((rx, tx)) => {
+                                event_rx = Some(rx);
+                                stdin_tx = Some(tx);
+                                let secs = timeout.unwrap_or(30);
+                                deadline = Some(
+                                    tokio::time::Instant::now()
+                                        + std::time::Duration::from_secs(secs),
+                                );
                             }
-                            if is_terminal {
-                                break;
+                            Err(e) => {
+                                let _ = send_msg(&mut socket, &ServerMessage::Error {
+                                    message: e.to_string(),
+                                }).await;
                             }
                         }
                     }
-                    Err(e) => {
-                        drop(sb);
-                        let _ = send_msg(
-                            &mut socket,
-                            &ServerMessage::Error {
+                    ClientMessage::Stdin { data } => {
+                        if let Some(ref tx) = stdin_tx {
+                            if let Ok(decoded) = B64.decode(&data) {
+                                let _ = tx.send(decoded).await;
+                            }
+                        }
+                    }
+                    ClientMessage::Signal { signal } => {
+                        let sb = sandbox.lock().await;
+                        if let Err(e) = sb.send_signal(signal).await {
+                            let _ = send_msg(&mut socket, &ServerMessage::Error {
                                 message: e.to_string(),
-                            },
-                        )
-                        .await;
+                            }).await;
+                        }
                     }
-                }
-            }
-            ClientMessage::Stdin { data } => {
-                if let Some(ref tx) = stdin_tx {
-                    if let Ok(decoded) = B64.decode(&data) {
-                        let _ = tx.send(decoded).await;
-                    }
-                }
-            }
-            ClientMessage::Signal { signal } => {
-                let sb = sandbox.lock().await;
-                if let Err(e) = sb.send_signal(signal).await {
-                    drop(sb);
-                    let _ = send_msg(
-                        &mut socket,
-                        &ServerMessage::Error {
-                            message: e.to_string(),
-                        },
-                    )
-                    .await;
                 }
             }
         }
