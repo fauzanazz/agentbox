@@ -169,3 +169,89 @@ async fn send_msg(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), ()>
     let json = serde_json::to_string(msg).unwrap();
     socket.send(Message::Text(json.into())).await.map_err(|_| ())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── ClientMessage deserialization ─────────────────────────────────
+
+    #[test]
+    fn test_client_message_exec_deserialization() {
+        let with_timeout: ClientMessage =
+            serde_json::from_str(r#"{"type":"exec","command":"ls -la","timeout":30}"#).unwrap();
+        assert!(matches!(
+            with_timeout,
+            ClientMessage::Exec { ref command, timeout: Some(30) } if command == "ls -la"
+        ));
+
+        let without_timeout: ClientMessage =
+            serde_json::from_str(r#"{"type":"exec","command":"pwd"}"#).unwrap();
+        assert!(matches!(
+            without_timeout,
+            ClientMessage::Exec { ref command, timeout: None } if command == "pwd"
+        ));
+    }
+
+    #[test]
+    fn test_client_message_stdin_deserialization() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"stdin","data":"aGVsbG8="}"#).unwrap();
+        assert!(matches!(msg, ClientMessage::Stdin { ref data } if data == "aGVsbG8="));
+    }
+
+    #[test]
+    fn test_client_message_signal_deserialization() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"signal","signal":9}"#).unwrap();
+        assert!(matches!(msg, ClientMessage::Signal { signal: 9 }));
+    }
+
+    #[test]
+    fn test_client_message_invalid_type() {
+        let result = serde_json::from_str::<ClientMessage>(r#"{"type":"unknown"}"#);
+        assert!(result.is_err());
+    }
+
+    // ── ServerMessage serialization ──────────────────────────────────
+
+    #[test]
+    fn test_server_message_ready_serialization() {
+        let val = serde_json::to_value(&ServerMessage::Ready).unwrap();
+        assert_eq!(val, json!({"type": "ready"}));
+    }
+
+    #[test]
+    fn test_server_message_stdout_serialization() {
+        let val = serde_json::to_value(&ServerMessage::Stdout {
+            data: "aGVsbG8=".into(),
+        })
+        .unwrap();
+        assert_eq!(val, json!({"type": "stdout", "data": "aGVsbG8="}));
+    }
+
+    #[test]
+    fn test_server_message_stderr_serialization() {
+        let val = serde_json::to_value(&ServerMessage::Stderr {
+            data: "ZXJyb3I=".into(),
+        })
+        .unwrap();
+        assert_eq!(val, json!({"type": "stderr", "data": "ZXJyb3I="}));
+    }
+
+    #[test]
+    fn test_server_message_exit_serialization() {
+        let val = serde_json::to_value(&ServerMessage::Exit { code: 0 }).unwrap();
+        assert_eq!(val, json!({"type": "exit", "code": 0}));
+    }
+
+    #[test]
+    fn test_server_message_error_serialization() {
+        let val = serde_json::to_value(&ServerMessage::Error {
+            message: "something went wrong".into(),
+        })
+        .unwrap();
+        assert_eq!(val, json!({"type": "error", "message": "something went wrong"}));
+    }
+}
