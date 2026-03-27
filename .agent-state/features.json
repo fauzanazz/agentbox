@@ -1,0 +1,14 @@
+[
+  { "name": "sandbox-create-destroy", "description": "Sandbox.create() and .destroy() with context manager support", "passes": true },
+  { "name": "sandbox-exec", "description": "Sandbox.exec() for command execution", "passes": true },
+  { "name": "sandbox-exec-stream", "description": "Streaming exec via WebSocket", "passes": true },
+  { "name": "sandbox-file-ops", "description": "upload(), upload_content(), download(), list_files()", "passes": true },
+  { "name": "sandbox-info", "description": "Sandbox.info() returns SandboxInfo", "passes": true },
+  { "name": "tool-definitions", "description": "Pre-built tool definitions for OpenAI and Anthropic formats", "passes": true },
+  { "name": "handle-tool-call", "description": "handle_tool_call() helper for agent loop integration", "passes": true },
+  { "name": "exit-conditional-suppression", "description": "__exit__ only suppresses destroy errors when user exception is active, propagates on clean exit", "passes": true },
+  { "name": "tool-call-input-validation", "description": "Guard JSON parsing, validate types and required params in handle_tool_call", "passes": true },
+  { "name": "write-file-content-type-check", "description": "write_file validates content is a string before .encode()", "passes": true },
+  { "name": "test-create-options-body", "description": "test_sandbox_create_with_options verifies POST body contents", "passes": true },
+  { "name": "readme-context-manager", "description": "README LLM example uses context manager to prevent sandbox leaks", "passes": true }
+]
