@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+description="AgentBox Guest Agent"
+command="/usr/local/bin/guest-agent"
+command_background=true
+pidfile="/run/guest-agent.pid"
+output_log="/var/log/guest-agent.log"
+error_log="/var/log/guest-agent.log"
+
+depend() {
+    after localmount
+}
