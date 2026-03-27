@@ -5,3 +5,6 @@ artifacts/output/
 
 # Agent orchestrator state (auto-generated)
 .agent-state/
+
+# Rust build artifacts
+/target/
