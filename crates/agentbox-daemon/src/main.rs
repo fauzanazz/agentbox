@@ -4,6 +4,7 @@ use tracing_subscriber::EnvFilter;
 mod handlers;
 mod routes;
 mod state;
+mod ws;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
