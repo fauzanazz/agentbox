@@ -71,8 +71,6 @@ async fn handle_ws(mut socket: WebSocket, sandbox: Arc<Mutex<Sandbox>>) {
 
     loop {
         tokio::select! {
-            biased;
-
             // Forward exec output to WebSocket
             Some(event) = async {
                 match &mut event_rx {
@@ -108,6 +106,9 @@ async fn handle_ws(mut socket: WebSocket, sandbox: Arc<Mutex<Sandbox>>) {
                     None => std::future::pending().await,
                 }
             } => {
+                let sb = sandbox.lock().await;
+                let _ = sb.send_signal(9).await; // SIGKILL
+                drop(sb);
                 event_rx = None;
                 stdin_tx = None;
                 deadline = None;
