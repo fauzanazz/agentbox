@@ -33,8 +33,20 @@ impl AppState {
         self.sandboxes.lock().await.get(id).cloned()
     }
 
-    pub async fn remove_sandbox(&self, id: &SandboxId) -> Option<Sandbox> {
-        let sb_arc = self.sandboxes.lock().await.remove(id)?;
-        Some(Arc::try_unwrap(sb_arc).ok()?.into_inner())
+    pub async fn remove_sandbox(&self, id: &SandboxId) -> Result<Sandbox, RemoveSandboxError> {
+        let mut sandboxes = self.sandboxes.lock().await;
+        let sb_arc = sandboxes.remove(id).ok_or(RemoveSandboxError::NotFound)?;
+        match Arc::try_unwrap(sb_arc) {
+            Ok(mutex) => Ok(mutex.into_inner()),
+            Err(arc) => {
+                sandboxes.insert(id.clone(), arc);
+                Err(RemoveSandboxError::InUse)
+            }
+        }
     }
+}
+
+pub enum RemoveSandboxError {
+    NotFound,
+    InUse,
 }

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use agentbox_core::error::AgentBoxError;
 use agentbox_core::sandbox::{SandboxConfig, SandboxId};
 
-use crate::state::AppState;
+use crate::state::{AppState, RemoveSandboxError};
 
 // ── Request / query types ──────────────────────────────────────────
 
@@ -79,10 +79,12 @@ pub async fn destroy_sandbox(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let sandbox_id = SandboxId(id);
-    let sandbox = state
-        .remove_sandbox(&sandbox_id)
-        .await
-        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+    let sandbox = state.remove_sandbox(&sandbox_id).await.map_err(|e| match e {
+        RemoveSandboxError::NotFound => AppError::NotFound("Sandbox not found".into()),
+        RemoveSandboxError::InUse => {
+            AppError::BadRequest("Sandbox is currently in use by another request".into())
+        }
+    })?;
     state.pool.release(sandbox).await?;
     Ok(Json(serde_json::json!({"status": "destroyed"})))
 }
@@ -122,8 +124,19 @@ pub async fn upload_file(
         .map_err(|e| AppError::BadRequest(e.to_string()))?
     {
         match field.name() {
-            Some("path") => path = field.text().await.unwrap_or_default(),
-            Some("file") => content = field.bytes().await.unwrap_or_default().to_vec(),
+            Some("path") => {
+                path = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            }
+            Some("file") => {
+                content = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?
+                    .to_vec();
+            }
             _ => {}
         }
     }
