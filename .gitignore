@@ -8,3 +8,4 @@ artifacts/output/
 
 # Rust build artifacts
 /target/
+/sdks/typescript/node_modules

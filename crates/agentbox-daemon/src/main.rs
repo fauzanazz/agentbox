@@ -1,10 +1,4 @@
-use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
-
-mod handlers;
-mod routes;
-mod state;
-mod ws;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,43 +17,5 @@ async fn main() -> anyhow::Result<()> {
         agentbox_core::config::AgentBoxConfig::default()
     };
 
-    let listen_addr = config.daemon.listen.clone();
-
-    let vm_manager = Arc::new(agentbox_core::vm::VmManager::new(config.vm.clone()));
-    let pool = Arc::new(agentbox_core::pool::Pool::new(
-        config.pool.clone(),
-        config.guest.clone(),
-        vm_manager,
-    ));
-    let _pool_handle = pool.start().await?;
-
-    let state = Arc::new(state::AppState::new(pool.clone(), Arc::new(config)));
-
-    let app = routes::build_router(state);
-
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    tracing::info!("AgentBox daemon listening on {listen_addr}");
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    tracing::info!("Shutting down...");
-    pool.shutdown().await?;
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
-    #[cfg(unix)]
-    {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        tokio::select! {
-            _ = ctrl_c => {},
-            _ = sigterm.recv() => {},
-        }
-    }
-    #[cfg(not(unix))]
-    ctrl_c.await.ok();
+    agentbox_daemon::run_daemon(config, None).await
 }

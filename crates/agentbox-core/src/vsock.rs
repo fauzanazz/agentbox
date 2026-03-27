@@ -250,10 +250,7 @@ impl VsockClient {
             Some(serde_json::json!({ "path": path })),
         )
         .await?;
-        let content_b64 = result
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let content_b64 = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
         B64.decode(content_b64)
             .map_err(|e| AgentBoxError::FileOp(e.to_string()))
     }
@@ -661,10 +658,7 @@ mod tests {
             // Read the exec_stream request
             let req = read_lp_message(&mut stream).await;
             let id = req.get("id").unwrap().as_u64().unwrap();
-            assert_eq!(
-                req.get("method").unwrap().as_str().unwrap(),
-                "exec_stream"
-            );
+            assert_eq!(req.get("method").unwrap().as_str().unwrap(), "exec_stream");
 
             // Send streaming stdout
             let stdout_data = B64.encode(b"hello\n");

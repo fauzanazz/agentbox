@@ -1,0 +1,54 @@
+use std::sync::Arc;
+
+use agentbox_core::config::AgentBoxConfig;
+
+pub mod handlers;
+pub mod routes;
+pub mod state;
+pub mod ws;
+
+/// Run the AgentBox daemon with the given config.
+pub async fn run_daemon(
+    config: AgentBoxConfig,
+    listen_override: Option<String>,
+) -> anyhow::Result<()> {
+    let listen_addr = listen_override.unwrap_or_else(|| config.daemon.listen.clone());
+
+    let vm_manager = Arc::new(agentbox_core::vm::VmManager::new(config.vm.clone()));
+    let pool = Arc::new(agentbox_core::pool::Pool::new(
+        config.pool.clone(),
+        config.guest.clone(),
+        vm_manager,
+    ));
+    let _pool_handle = pool.start().await?;
+
+    let state = Arc::new(state::AppState::new(pool.clone(), Arc::new(config)));
+
+    let app = routes::build_router(state);
+
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
+    tracing::info!("AgentBox daemon listening on {listen_addr}");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    tracing::info!("Shutting down...");
+    pool.shutdown().await?;
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await.ok();
+}

@@ -79,12 +79,15 @@ pub async fn destroy_sandbox(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let sandbox_id = SandboxId(id);
-    let sandbox = state.remove_sandbox(&sandbox_id).await.map_err(|e| match e {
-        RemoveSandboxError::NotFound => AppError::NotFound("Sandbox not found".into()),
-        RemoveSandboxError::InUse => {
-            AppError::BadRequest("Sandbox is currently in use by another request".into())
-        }
-    })?;
+    let sandbox = state
+        .remove_sandbox(&sandbox_id)
+        .await
+        .map_err(|e| match e {
+            RemoveSandboxError::NotFound => AppError::NotFound("Sandbox not found".into()),
+            RemoveSandboxError::InUse => {
+                AppError::BadRequest("Sandbox is currently in use by another request".into())
+            }
+        })?;
     state.pool.release(sandbox).await?;
     Ok(Json(serde_json::json!({"status": "destroyed"})))
 }
@@ -305,5 +308,93 @@ mod tests {
         let err = AppError::Internal("something broke".into());
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── AgentBoxError → AppError mapping ─────────────────────────
+
+    #[test]
+    fn pool_exhausted_maps_to_service_unavailable() {
+        let e = AppError::from(AgentBoxError::PoolExhausted);
+        assert!(matches!(e, AppError::ServiceUnavailable(_)));
+    }
+
+    #[test]
+    fn vm_not_found_maps_to_not_found() {
+        let e = AppError::from(AgentBoxError::VmNotFound("abc".into()));
+        assert!(matches!(e, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn vm_creation_maps_to_internal() {
+        let e = AppError::from(AgentBoxError::VmCreation("fail".into()));
+        assert!(matches!(e, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn timeout_maps_to_internal() {
+        let e = AppError::from(AgentBoxError::Timeout("too slow".into()));
+        assert!(matches!(e, AppError::Internal(_)));
+    }
+
+    // ── AppError body format ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn app_error_body_is_json_with_error_key() {
+        let err = AppError::NotFound("sandbox xyz not found".into());
+        let resp = err.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "sandbox xyz not found");
+    }
+
+    // ── 404 for upload & files_get ───────────────────────────────
+
+    #[tokio::test]
+    async fn upload_file_nonexistent_sandbox_returns_404() {
+        let app = test_app();
+        let boundary = "----testboundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\r\nhello\r\n--{boundary}--\r\n"
+        );
+        let req = Request::builder()
+            .uri("/sandboxes/nonexistent/files")
+            .method("POST")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn files_get_nonexistent_sandbox_returns_404() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes/nonexistent/files?list=true")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Request validation ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_sandbox_invalid_json_returns_4xx() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from("not json"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(resp.status().is_client_error());
     }
 }

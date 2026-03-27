@@ -184,7 +184,10 @@ async fn handle_ws(mut socket: WebSocket, sandbox: Arc<Mutex<Sandbox>>) {
 
 async fn send_msg(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), ()> {
     let json = serde_json::to_string(msg).unwrap();
-    socket.send(Message::Text(json.into())).await.map_err(|_| ())
+    socket
+        .send(Message::Text(json.into()))
+        .await
+        .map_err(|_| ())
 }
 
 #[cfg(test)]
@@ -220,8 +223,7 @@ mod tests {
 
     #[test]
     fn test_client_message_signal_deserialization() {
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"signal","signal":9}"#).unwrap();
+        let msg: ClientMessage = serde_json::from_str(r#"{"type":"signal","signal":9}"#).unwrap();
         assert!(matches!(msg, ClientMessage::Signal { signal: 9 }));
     }
 
@@ -269,6 +271,9 @@ mod tests {
             message: "something went wrong".into(),
         })
         .unwrap();
-        assert_eq!(val, json!({"type": "error", "message": "something went wrong"}));
+        assert_eq!(
+            val,
+            json!({"type": "error", "message": "something went wrong"})
+        );
     }
 }

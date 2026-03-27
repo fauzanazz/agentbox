@@ -137,8 +137,7 @@ pub async fn handle_exec_stream<W: AsyncWriteExt + Unpin>(
             match stdout.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data =
-                        base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let msg = StreamMessage {
                         id,
                         stream: "stdout".to_string(),
@@ -160,8 +159,7 @@ pub async fn handle_exec_stream<W: AsyncWriteExt + Unpin>(
             match stderr.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data =
-                        base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let msg = StreamMessage {
                         id,
                         stream: "stderr".to_string(),
@@ -213,10 +211,7 @@ fn extract_exec_params(params: &Option<Value>) -> Result<(String, u64), String> 
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'command' parameter".to_string())?
         .to_string();
-    let timeout = params
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(30);
+    let timeout = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
     Ok((command, timeout))
 }
 
