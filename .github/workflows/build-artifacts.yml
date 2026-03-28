@@ -1,0 +1,61 @@
+name: Build VM Artifacts
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  KERNEL_VERSION: "4.14.336"
+  ALPINE_VERSION: "3.20"
+
+jobs:
+  build-artifacts:
+    name: Build artifacts (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y musl-tools build-essential flex bison libelf-dev bc libssl-dev
+
+      - name: Build guest-agent
+        run: |
+          cargo build --release --target ${{ matrix.rust_target }} -p guest-agent
+          mkdir -p artifacts/output/${{ matrix.arch }}
+          cp target/${{ matrix.rust_target }}/release/guest-agent artifacts/output/${{ matrix.arch }}/
+
+      - name: Cache kernel build
+        uses: actions/cache@v4
+        with:
+          path: artifacts/build/linux-${{ env.KERNEL_VERSION }}
+          key: kernel-${{ matrix.arch }}-${{ env.KERNEL_VERSION }}-${{ hashFiles('artifacts/kernel/config-*') }}
+
+      - name: Build kernel
+        run: cd artifacts && make kernel ARCH=${{ matrix.arch }}
+
+      - name: Build rootfs
+        run: cd artifacts && sudo make rootfs ARCH=${{ matrix.arch }}
+
+      - name: Package artifacts
+        run: |
+          tar -czf agentbox-artifacts-${{ matrix.arch }}.tar.gz \
+            -C artifacts/output/${{ matrix.arch }} \
+            vmlinux rootfs.ext4 guest-agent
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbox-artifacts-${{ matrix.arch }}
+          path: agentbox-artifacts-${{ matrix.arch }}.tar.gz

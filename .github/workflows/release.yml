@@ -50,9 +50,60 @@ jobs:
           name: agentbox-linux-${{ matrix.arch }}
           path: agentbox-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz
 
+  build-vm-artifacts:
+    name: Build VM artifacts (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y musl-tools build-essential flex bison libelf-dev bc libssl-dev
+
+      - name: Build guest-agent
+        run: |
+          cargo build --release --target ${{ matrix.rust_target }} -p guest-agent
+          mkdir -p artifacts/output/${{ matrix.arch }}
+          cp target/${{ matrix.rust_target }}/release/guest-agent artifacts/output/${{ matrix.arch }}/
+
+      - name: Cache kernel build
+        uses: actions/cache@v4
+        with:
+          path: artifacts/build/linux-*
+          key: kernel-${{ matrix.arch }}-${{ hashFiles('artifacts/Makefile', 'artifacts/kernel/config-*') }}
+
+      - name: Build kernel
+        run: cd artifacts && make kernel ARCH=${{ matrix.arch }}
+
+      - name: Build rootfs
+        run: cd artifacts && sudo make rootfs ARCH=${{ matrix.arch }}
+
+      - name: Package VM artifacts
+        run: |
+          tar -czf agentbox-artifacts-${{ matrix.arch }}.tar.gz \
+            -C artifacts/output/${{ matrix.arch }} \
+            vmlinux rootfs.ext4 guest-agent
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbox-artifacts-${{ matrix.arch }}
+          path: agentbox-artifacts-${{ matrix.arch }}.tar.gz
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-vm-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write
