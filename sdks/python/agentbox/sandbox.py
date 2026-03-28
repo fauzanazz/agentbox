@@ -7,6 +7,7 @@ from typing import AsyncIterator
 import websockets
 
 from .client import AgentBoxClient
+from .exec_session import ExecSession
 from .types import ExecResult, FileEntry, PortForwardInfo, SandboxInfo
 
 
@@ -83,6 +84,37 @@ class Sandbox:
                 elif msg_type == "error":
                     yield {"type": "error", "message": msg["message"]}
                     break
+
+    async def exec_interactive(self, command: str) -> ExecSession:
+        """Start an interactive exec session with stdin and signal support.
+
+        Returns an ExecSession that can stream events and accept stdin.
+        Does not break exec_stream() — this is a new, separate method.
+
+        Usage::
+
+            async with sandbox.exec_interactive("python3") as session:
+                await session.send_stdin(b"print('hello')\\n")
+                async for event in session.events():
+                    print(event)
+        """
+        ws_url = self._client.ws_url(f"/sandboxes/{self.id}/ws")
+        extra_headers = {}
+        if self._client.api_key:
+            extra_headers["Authorization"] = f"Bearer {self._client.api_key}"
+
+        ws = await websockets.connect(ws_url, additional_headers=extra_headers)
+
+        # Wait for ready
+        msg = json.loads(await ws.recv())
+        if msg.get("type") != "ready":
+            await ws.close()
+            raise RuntimeError(f"Expected ready, got: {msg}")
+
+        # Send exec command
+        await ws.send(json.dumps({"type": "exec", "command": command}))
+
+        return ExecSession(ws)
 
     # ── File operations ─────────────────────────────────────────
 
