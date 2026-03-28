@@ -2,21 +2,76 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 
 // Test type exports
-import { Sandbox } from "../dist/index.js";
+import {
+  AgentBoxClient,
+  AgentBoxError,
+  ExecSession,
+  Sandbox,
+  getToolDefinitions,
+  handleToolCall,
+} from "../dist/index.js";
+
+// ── Exports ───────────────────────────────────────────────────
+
+describe("Exports", () => {
+  it("exports Sandbox", () => {
+    assert.strictEqual(typeof Sandbox, "function");
+  });
+
+  it("exports AgentBoxClient", () => {
+    assert.strictEqual(typeof AgentBoxClient, "function");
+  });
+
+  it("exports AgentBoxError", () => {
+    assert.strictEqual(typeof AgentBoxError, "function");
+  });
+
+  it("exports ExecSession", () => {
+    assert.strictEqual(typeof ExecSession, "function");
+  });
+
+  it("exports getToolDefinitions", () => {
+    assert.strictEqual(typeof getToolDefinitions, "function");
+  });
+
+  it("exports handleToolCall", () => {
+    assert.strictEqual(typeof handleToolCall, "function");
+  });
+});
+
+// ── Sandbox ───────────────────────────────────────────────────
 
 describe("Sandbox", () => {
   it("has static create method", () => {
     assert.strictEqual(typeof Sandbox.create, "function");
   });
 
-  it("has instance methods", () => {
-    // Verify prototype has all expected methods
+  it("has static list method", () => {
+    assert.strictEqual(typeof Sandbox.list, "function");
+  });
+
+  it("has static poolStatus method", () => {
+    assert.strictEqual(typeof Sandbox.poolStatus, "function");
+  });
+
+  it("has static health method", () => {
+    assert.strictEqual(typeof Sandbox.health, "function");
+  });
+
+  it("has all instance methods", () => {
     const methods = [
       "exec",
       "execStream",
+      "execInteractive",
       "uploadContent",
       "download",
       "listFiles",
+      "deleteFile",
+      "mkdir",
+      "sendSignal",
+      "portForward",
+      "listPortForwards",
+      "removePortForward",
       "info",
       "destroy",
       "toolDefinitions",
@@ -32,9 +87,9 @@ describe("Sandbox", () => {
   });
 });
 
-describe("AgentBoxClient", async () => {
-  const { AgentBoxClient } = await import("../dist/client.js");
+// ── AgentBoxClient ────────────────────────────────────────────
 
+describe("AgentBoxClient", () => {
   it("uses default URL", () => {
     const client = new AgentBoxClient();
     assert.strictEqual(client.baseUrl, "http://localhost:8080");
@@ -65,11 +120,86 @@ describe("AgentBoxClient", async () => {
       "wss://api.example.com/ws",
     );
   });
+
+  // Auth tests
+
+  it("has no apiKey by default", () => {
+    const client = new AgentBoxClient();
+    assert.strictEqual(client.apiKey, undefined);
+  });
+
+  it("accepts explicit apiKey", () => {
+    const client = new AgentBoxClient(undefined, "my-secret");
+    assert.strictEqual(client.apiKey, "my-secret");
+  });
+
+  it("appends token to WebSocket URL when apiKey is set", () => {
+    const client = new AgentBoxClient("http://localhost:8080", "my-key");
+    const wsUrl = client.wsUrl("/sandboxes/abc/ws");
+    assert.ok(wsUrl.includes("?token=my-key"), `Expected token in WS URL: ${wsUrl}`);
+  });
+
+  it("does not append token to WebSocket URL when no apiKey", () => {
+    const client = new AgentBoxClient("http://localhost:8080");
+    const wsUrl = client.wsUrl("/sandboxes/abc/ws");
+    assert.ok(!wsUrl.includes("token="), `Unexpected token in WS URL: ${wsUrl}`);
+  });
+
+  it("URL-encodes apiKey in WebSocket URL", () => {
+    const client = new AgentBoxClient("http://localhost:8080", "key with spaces&special=chars");
+    const wsUrl = client.wsUrl("/ws");
+    assert.ok(wsUrl.includes("?token="), `Expected token param: ${wsUrl}`);
+    assert.ok(!wsUrl.includes(" "), "Token should be URL-encoded");
+  });
+
+  it("has client-level API methods", () => {
+    const methods = ["listSandboxes", "poolStatus", "health"];
+    for (const m of methods) {
+      assert.strictEqual(
+        typeof AgentBoxClient.prototype[m],
+        "function",
+        `Missing method: ${m}`,
+      );
+    }
+  });
 });
 
-describe("Tool Definitions", async () => {
-  const { getToolDefinitions } = await import("../dist/tools.js");
+// ── AgentBoxError ─────────────────────────────────────────────
 
+describe("AgentBoxError", () => {
+  it("extends Error", () => {
+    const err = new AgentBoxError("test error", 404, '{"error":"not found"}');
+    assert.ok(err instanceof Error);
+    assert.ok(err instanceof AgentBoxError);
+  });
+
+  it("has statusCode and responseBody", () => {
+    const err = new AgentBoxError("boom", 500, '{"error":"internal"}');
+    assert.strictEqual(err.statusCode, 500);
+    assert.strictEqual(err.responseBody, '{"error":"internal"}');
+    assert.strictEqual(err.message, "boom");
+    assert.strictEqual(err.name, "AgentBoxError");
+  });
+});
+
+// ── ExecSession ───────────────────────────────────────────────
+
+describe("ExecSession", () => {
+  it("has expected methods", () => {
+    const methods = ["events", "sendStdin", "sendSignal", "close"];
+    for (const m of methods) {
+      assert.strictEqual(
+        typeof ExecSession.prototype[m],
+        "function",
+        `Missing method: ${m}`,
+      );
+    }
+  });
+});
+
+// ── Tool Definitions ──────────────────────────────────────────
+
+describe("Tool Definitions", () => {
   it("returns OpenAI format by default", () => {
     const tools = getToolDefinitions();
     assert.strictEqual(tools.length, 3);
@@ -102,9 +232,9 @@ describe("Tool Definitions", async () => {
   });
 });
 
-describe("handleToolCall", async () => {
-  const { handleToolCall } = await import("../dist/tools.js");
+// ── handleToolCall ────────────────────────────────────────────
 
+describe("handleToolCall", () => {
   function mockSandbox(overrides = {}) {
     return {
       exec:
@@ -242,9 +372,9 @@ describe("handleToolCall", async () => {
   });
 });
 
-describe("Tool Definition Schema Validation", async () => {
-  const { getToolDefinitions } = await import("../dist/tools.js");
+// ── Tool Definition Schema Validation ─────────────────────────
 
+describe("Tool Definition Schema Validation", () => {
   it("OpenAI format has correct nested structure", () => {
     const tools = getToolDefinitions("openai");
     for (const tool of tools) {

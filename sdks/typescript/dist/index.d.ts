@@ -1,2 +1,5 @@
-export { Sandbox } from "./sandbox.js";
-export type { ExecResult, ExecStreamEvent, FileEntry, PortForwardInfo, SandboxConfig, SandboxInfo, } from "./types.js";
+export { AgentBoxClient } from "./client.js";
+export { AgentBoxError } from "./errors.js";
+export { ExecSession, Sandbox } from "./sandbox.js";
+export { getToolDefinitions, handleToolCall } from "./tools.js";
+export type { ExecResult, ExecStreamEvent, ExecToolResult, FileEntry, HealthStatus, PoolStatus, PortForwardInfo, ReadToolResult, SandboxConfig, SandboxInfo, ToolError, ToolResult, WriteToolResult, } from "./types.js";

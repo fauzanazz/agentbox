@@ -1,35 +1,41 @@
+import { throwForStatus } from "./errors.js";
+
 /** HTTP client for the AgentBox daemon API. Zero dependencies — uses native fetch. */
 export class AgentBoxClient {
   readonly baseUrl: string;
+  readonly apiKey: string | undefined;
+  private readonly headers: Record<string, string>;
 
-  constructor(url?: string) {
+  constructor(url?: string, apiKey?: string) {
     this.baseUrl = (
       url ?? process.env.AGENTBOX_URL ?? "http://localhost:8080"
     ).replace(/\/+$/, "");
+
+    this.apiKey = apiKey ?? process.env.AGENTBOX_API_KEY ?? undefined;
+
+    this.headers = {};
+    if (this.apiKey) {
+      this.headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
   }
 
   async post(path: string, body: unknown): Promise<unknown> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...this.headers, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`POST ${path} failed (${resp.status}): ${text}`);
-    }
+    if (!resp.ok) await throwForStatus("POST", path, resp);
     return resp.json();
   }
 
   async postMultipart(path: string, form: FormData): Promise<unknown> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
+      headers: this.headers,
       body: form,
     });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`POST ${path} failed (${resp.status}): ${text}`);
-    }
+    if (!resp.ok) await throwForStatus("POST", path, resp);
     return resp.json();
   }
 
@@ -40,11 +46,8 @@ export class AgentBoxClient {
         url.searchParams.set(k, v);
       }
     }
-    const resp = await fetch(url.toString());
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`GET ${path} failed (${resp.status}): ${text}`);
-    }
+    const resp = await fetch(url.toString(), { headers: this.headers });
+    if (!resp.ok) await throwForStatus("GET", path, resp);
     return resp.json();
   }
 
@@ -58,28 +61,62 @@ export class AgentBoxClient {
         url.searchParams.set(k, v);
       }
     }
-    const resp = await fetch(url.toString());
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`GET ${path} failed (${resp.status}): ${text}`);
-    }
+    const resp = await fetch(url.toString(), { headers: this.headers });
+    if (!resp.ok) await throwForStatus("GET", path, resp);
     return resp.arrayBuffer();
   }
 
-  async delete(path: string): Promise<unknown> {
-    const resp = await fetch(`${this.baseUrl}${path}`, { method: "DELETE" });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`DELETE ${path} failed (${resp.status}): ${text}`);
+  async put(
+    path: string,
+    params?: Record<string, string>,
+  ): Promise<unknown> {
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        url.searchParams.set(k, v);
+      }
     }
+    const resp = await fetch(url.toString(), {
+      method: "PUT",
+      headers: this.headers,
+    });
+    if (!resp.ok) await throwForStatus("PUT", path, resp);
+    return resp.json();
+  }
+
+  async delete(path: string): Promise<unknown> {
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: this.headers,
+    });
+    if (!resp.ok) await throwForStatus("DELETE", path, resp);
     return resp.json();
   }
 
   wsUrl(path: string): string {
-    return (
-      this.baseUrl
-        .replace("http://", "ws://")
-        .replace("https://", "wss://") + path
-    );
+    const base = this.baseUrl
+      .replace("http://", "ws://")
+      .replace("https://", "wss://");
+    if (this.apiKey) {
+      return `${base}${path}?token=${encodeURIComponent(this.apiKey)}`;
+    }
+    return `${base}${path}`;
+  }
+
+  // ── Client-level API methods ────────────────────────────────
+
+  /** List all active sandboxes. */
+  async listSandboxes(): Promise<unknown[]> {
+    return (await this.get("/sandboxes")) as unknown[];
+  }
+
+  /** Get pool status (warm VMs, capacity). */
+  async poolStatus(): Promise<unknown> {
+    return this.get("/pool/status");
+  }
+
+  /** Health check (public, no auth required). */
+  async health(): Promise<unknown> {
+    return this.get("/health");
   }
 }

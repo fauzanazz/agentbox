@@ -1,4 +1,5 @@
 import type { Sandbox } from "./sandbox.js";
+import type { ToolResult } from "./types.js";
 
 interface ToolDef {
   name: string;
@@ -72,7 +73,7 @@ export function getToolDefinitions(
 export async function handleToolCall(
   sandbox: Sandbox,
   toolCall: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Promise<ToolResult> {
   const name =
     (toolCall.name as string) ??
     (toolCall.function as Record<string, unknown> | undefined)?.name;
@@ -112,7 +113,7 @@ export async function handleToolCall(
     if (typeof content !== "string")
       return { error: "Parameter 'content' must be a string" };
     await sandbox.uploadContent(new TextEncoder().encode(content), args.path as string);
-    return { status: "written", path: args.path };
+    return { status: "written", path: args.path as string };
   }
 
   if (name === "read_file") {

@@ -37,3 +37,41 @@ export interface PortForwardInfo {
   host_port: number;
   local_address: string;
 }
+
+export interface PoolStatus {
+  available: number;
+  active: number;
+  [key: string]: unknown;
+}
+
+export interface HealthStatus {
+  status: string;
+  pool: { active: number; max_size: number };
+}
+
+// ── Tool result discriminated unions ──────────────────────────
+
+export type ExecToolResult = {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+};
+
+export type WriteToolResult = {
+  status: "written";
+  path: string;
+};
+
+export type ReadToolResult = {
+  content: string;
+};
+
+export type ToolError = {
+  error: string;
+};
+
+export type ToolResult =
+  | ExecToolResult
+  | WriteToolResult
+  | ReadToolResult
+  | ToolError;
