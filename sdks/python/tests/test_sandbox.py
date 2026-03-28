@@ -5,6 +5,7 @@ import respx
 
 from agentbox import Sandbox
 from agentbox.client import AgentBoxClient
+from agentbox.errors import AgentBoxAPIError
 from agentbox.types import ExecResult, FileEntry, SandboxInfo
 
 
@@ -179,10 +180,10 @@ def test_sandbox_exit_raises_destroy_errors_on_clean_exit():
     try:
         with Sandbox.create() as sb:
             assert sb.id == "sb-err"
-    except httpx.HTTPStatusError:
+    except AgentBoxAPIError:
         pass  # Expected: destroy error propagates
     else:
-        raise AssertionError("Expected HTTPStatusError from failed destroy")
+        raise AssertionError("Expected AgentBoxAPIError from failed destroy")
 
 
 @respx.mock
