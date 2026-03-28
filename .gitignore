@@ -8,5 +8,17 @@ artifacts/output/
 
 # Rust build artifacts
 /target/
+
+# TypeScript SDK
 /sdks/typescript/node_modules
 /sdks/typescript/dist
+
+# Python
+__pycache__/
+*.pyc
+sdks/python/uv.lock
+
+# Tooling / editor state
+.claude/
+.planning/
+.worktrees/
