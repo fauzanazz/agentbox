@@ -9,10 +9,10 @@ fi
 ARCH="$1"
 OUTPUT_DIR="$2"
 
-SNAPSHOT_DIR="${OUTPUT_DIR}/snapshot"
-VMLINUX="${OUTPUT_DIR}/vmlinux"
+SNAPSHOT_DIR="$(realpath "${OUTPUT_DIR}")/snapshot"
+VMLINUX="$(realpath "${OUTPUT_DIR}/vmlinux")"
 ROOTFS="${OUTPUT_DIR}/rootfs.ext4"
-WORK_DIR="build/snapshot-bake"
+WORK_DIR="$(pwd)/build/snapshot-bake"
 
 if [ -f "${SNAPSHOT_DIR}/vmstate.bin" ]; then
     echo "Snapshot already baked: ${SNAPSHOT_DIR}"
@@ -26,14 +26,16 @@ mkdir -p "$SNAPSHOT_DIR" "$WORK_DIR"
 # Copy rootfs (don't modify the original)
 cp "$ROOTFS" "${WORK_DIR}/rootfs.ext4"
 
-API_SOCK="${WORK_DIR}/api.sock"
-VSOCK_SOCK="${WORK_DIR}/vsock.sock"
+# Firecracker embeds drive and vsock UDS paths into the snapshot.
+# Use relative paths so that restored snapshots work from any temp directory.
+# The kernel path is NOT embedded, so it can stay absolute.
+cd "$WORK_DIR"
 
-# Start Firecracker (fresh boot)
-firecracker --api-sock "${API_SOCK}" &
+# Start Firecracker (fresh boot) — relative api.sock inside WORK_DIR
+firecracker --api-sock api.sock &
 FC_PID=$!
 
-# Ensure cleanup on exit
+# Ensure cleanup on exit (use absolute WORK_DIR path since we cd'd)
 cleanup() {
     kill "$FC_PID" 2>/dev/null || true
     wait "$FC_PID" 2>/dev/null || true
@@ -43,33 +45,34 @@ trap cleanup EXIT
 
 sleep 1
 
-# Configure VM via API
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/boot-source" \
+# Configure VM via API — kernel uses absolute path (not embedded in snapshot),
+# rootfs and vsock use relative paths (embedded in snapshot).
+curl --unix-socket api.sock -sf -X PUT "http://localhost/boot-source" \
     -H "Content-Type: application/json" \
-    -d "{\"kernel_image_path\": \"$(realpath "$VMLINUX")\", \"boot_args\": \"console=ttyS0 reboot=k panic=1 pci=off\"}"
+    -d "{\"kernel_image_path\": \"${VMLINUX}\", \"boot_args\": \"console=ttyS0 reboot=k panic=1 pci=off\"}"
 
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/drives/rootfs" \
+curl --unix-socket api.sock -sf -X PUT "http://localhost/drives/rootfs" \
     -H "Content-Type: application/json" \
-    -d "{\"drive_id\": \"rootfs\", \"path_on_host\": \"$(realpath "${WORK_DIR}/rootfs.ext4")\", \"is_root_device\": true, \"is_read_only\": false}"
+    -d '{"drive_id": "rootfs", "path_on_host": "rootfs.ext4", "is_root_device": true, "is_read_only": false}'
 
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/vsock" \
+curl --unix-socket api.sock -sf -X PUT "http://localhost/vsock" \
     -H "Content-Type: application/json" \
-    -d "{\"guest_cid\": 3, \"uds_path\": \"$(realpath "$VSOCK_SOCK")\"}"
+    -d '{"guest_cid": 3, "uds_path": "vsock.sock"}'
 
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/machine-config" \
+curl --unix-socket api.sock -sf -X PUT "http://localhost/machine-config" \
     -H "Content-Type: application/json" \
-    -d '{"vcpu_count": 2, "mem_size_mib": 2048}'
+    -d '{"vcpu_count": 1, "mem_size_mib": 512}'
 
 # Start the VM
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/actions" \
+curl --unix-socket api.sock -sf -X PUT "http://localhost/actions" \
     -H "Content-Type: application/json" \
     -d '{"action_type": "InstanceStart"}'
 
-# Wait for guest agent to be ready
+# Wait for guest agent to be ready via vsock CONNECT handshake
 echo "Waiting for guest agent..."
 AGENT_READY=false
 for i in $(seq 1 60); do
-    if echo '{"id":1,"method":"ping"}' | timeout 2 socat - "UNIX-CONNECT:${VSOCK_SOCK}" 2>/dev/null | grep -q "ok"; then
+    if echo -e "CONNECT 5000\n" | timeout 2 socat - UNIX-CONNECT:vsock.sock 2>/dev/null | grep -q "^OK"; then
         echo "Guest agent ready after ${i}s"
         AGENT_READY=true
         break
@@ -83,13 +86,13 @@ if [ "$AGENT_READY" != "true" ]; then
 fi
 
 # Pause the VM
-curl --unix-socket "$API_SOCK" -sf -X PATCH "http://localhost/vm" \
+curl --unix-socket api.sock -sf -X PATCH "http://localhost/vm" \
     -H "Content-Type: application/json" \
     -d '{"state": "Paused"}'
 
-# Take snapshot
-curl --unix-socket "$API_SOCK" -sf -X PUT "http://localhost/snapshot/create" \
+# Take snapshot — output paths are absolute (not embedded in snapshot config)
+curl --unix-socket api.sock -sf -X PUT "http://localhost/snapshot/create" \
     -H "Content-Type: application/json" \
-    -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"$(realpath "${SNAPSHOT_DIR}/vmstate.bin")\", \"mem_file_path\": \"$(realpath "${SNAPSHOT_DIR}/memory.bin")\"}"
+    -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"${SNAPSHOT_DIR}/vmstate.bin\", \"mem_file_path\": \"${SNAPSHOT_DIR}/memory.bin\"}"
 
 echo "Snapshot created at: ${SNAPSHOT_DIR}"
