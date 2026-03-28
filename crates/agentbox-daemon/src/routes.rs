@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
+use axum::extract::Request;
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
+use axum::Json;
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -9,8 +14,47 @@ use crate::handlers;
 use crate::state::AppState;
 use crate::ws;
 
+/// Bearer token auth middleware. Rejects requests without a valid API key.
+async fn require_api_key(
+    state: axum::extract::State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let expected = match state.config.daemon.api_key {
+        Some(ref key) => key,
+        None => return next.run(req).await, // no key configured = open access
+    };
+
+    let unauthorized = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing API key"})),
+        )
+            .into_response()
+    };
+
+    let header = match req.headers().get("authorization") {
+        Some(v) => v,
+        None => return unauthorized(),
+    };
+
+    let value = match header.to_str() {
+        Ok(v) => v,
+        Err(_) => return unauthorized(),
+    };
+
+    if let Some(token) = value.strip_prefix("Bearer ") {
+        if token == expected {
+            return next.run(req).await;
+        }
+    }
+
+    unauthorized()
+}
+
 pub fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    // Protected routes — require API key
+    let protected = Router::new()
         .route("/sandboxes", post(handlers::create_sandbox))
         .route("/sandboxes", get(handlers::list_sandboxes))
         .route("/sandboxes/{id}", get(handlers::get_sandbox))
@@ -33,7 +77,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/sandboxes/{id}/ws", get(ws::ws_handler))
         .route("/pool/status", get(handlers::pool_status))
-        .route("/health", get(handlers::health_check))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ));
+
+    // Public routes — no auth required
+    let public = Router::new().route("/health", get(handlers::health_check));
+
+    protected
+        .merge(public)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

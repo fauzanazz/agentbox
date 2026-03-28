@@ -15,6 +15,7 @@ pub struct AgentBoxConfig {
 pub struct DaemonConfig {
     pub listen: String,
     pub log_level: String,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -57,6 +58,7 @@ impl Default for DaemonConfig {
         Self {
             listen: "127.0.0.1:8080".to_string(),
             log_level: "info".to_string(),
+            api_key: None,
         }
     }
 }

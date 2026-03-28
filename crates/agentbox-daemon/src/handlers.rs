@@ -703,4 +703,87 @@ mod tests {
             assert!(json["error"].is_string());
         }
     }
+
+    // ── API key auth ────────────────────────────────────────────
+
+    fn test_app_with_key(key: &str) -> axum::Router {
+        use agentbox_core::config::AgentBoxConfig;
+        use agentbox_core::pool::Pool;
+        use agentbox_core::vm::VmManager;
+
+        let mut config = AgentBoxConfig::default();
+        config.daemon.api_key = Some(key.to_string());
+
+        let vm_manager = Arc::new(VmManager::new(agentbox_core::config::VmConfig::default()));
+        let pool = Arc::new(Pool::new(
+            agentbox_core::config::PoolConfig::default(),
+            agentbox_core::config::GuestConfig::default(),
+            vm_manager,
+        ));
+        let state = Arc::new(crate::state::AppState::new(pool, Arc::new(config)));
+        crate::routes::build_router(state)
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_missing_key() {
+        let app = test_app_with_key("secret");
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_wrong_key() {
+        let app = test_app_with_key("secret");
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("GET")
+            .header("authorization", "Bearer wrong")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_accepts_correct_key() {
+        let app = test_app_with_key("secret");
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("GET")
+            .header("authorization", "Bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_is_public_even_with_key() {
+        let app = test_app_with_key("secret");
+        let req = Request::builder()
+            .uri("/health")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_disabled_when_no_key_configured() {
+        // test_app() uses default config (api_key = None)
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
