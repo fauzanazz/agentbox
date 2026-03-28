@@ -135,6 +135,28 @@ impl Sandbox {
         self.vsock.ping().await.unwrap_or(false)
     }
 
+    /// Configure networking inside the guest after a fresh boot with TAP.
+    /// Sets up eth0 with the assigned IP, default route, and DNS.
+    pub async fn setup_guest_network(&self) -> crate::error::Result<()> {
+        let net = match self.vm.network {
+            Some(ref n) => n,
+            None => return Ok(()),
+        };
+        let cmd = format!(
+            "ip addr add {}/30 dev eth0 && ip link set eth0 up && ip route add default via {} && echo 'nameserver 8.8.8.8' > /etc/resolv.conf",
+            net.guest_ip, net.host_ip
+        );
+        let result = self.exec(&cmd, Duration::from_secs(10)).await?;
+        if result.exit_code != 0 {
+            return Err(crate::error::AgentBoxError::VmCreation(format!(
+                "Guest network setup failed (exit {}): {}",
+                result.exit_code, result.stderr
+            )));
+        }
+        tracing::debug!(sandbox_id = %self.id, "Guest network configured: {}", net.guest_ip);
+        Ok(())
+    }
+
     pub async fn destroy(self) -> crate::error::Result<()> {
         // VM process is cleaned up when Child is dropped
         Ok(())

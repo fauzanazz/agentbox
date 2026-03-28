@@ -131,14 +131,17 @@ impl Pool {
     }
 
     pub async fn claim(&self, config: SandboxConfig) -> Result<Sandbox> {
-        // Fast path: pop from pool
+        // Fast path: pop a warm VM that matches the requested network config
         let pooled = {
             let mut avail = self.available.lock().await;
-            avail.pop_front().map(|ps| ps.sandbox)
+            let idx = avail
+                .iter()
+                .position(|ps| ps.sandbox.config.network == config.network);
+            idx.and_then(|i| avail.remove(i).map(|ps| ps.sandbox))
         };
 
         let sandbox = if let Some(sb) = pooled {
-            tracing::debug!(sandbox_id = %sb.id(), "Claimed warm sandbox from pool");
+            tracing::debug!(sandbox_id = %sb.id(), network = config.network, "Claimed warm sandbox from pool");
             sb
         } else {
             // Slow path: on-demand creation
@@ -148,7 +151,7 @@ impl Pool {
                 return Err(AgentBoxError::PoolExhausted);
             }
 
-            tracing::info!("Pool empty, creating sandbox on demand");
+            tracing::info!(network = config.network, "Pool miss, creating sandbox on demand");
             let vm = self.vm_manager.create_from_snapshot(&config).await?;
             let sb = Sandbox::new(vm, config.clone(), &self.guest_config);
 
@@ -171,6 +174,15 @@ impl Pool {
                     "Guest agent not ready within timeout".into(),
                 ));
             }
+
+            // Configure guest networking for fresh-booted VMs with TAP
+            if config.network {
+                if let Err(e) = sb.setup_guest_network().await {
+                    let _ = self.vm_manager.destroy(sb.into_vm()).await;
+                    return Err(e);
+                }
+            }
+
             sb
         };
 

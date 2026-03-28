@@ -1,10 +1,19 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::config::VmConfig;
 use crate::error::{AgentBoxError, Result};
 use crate::fc_api::fc_api_put;
 use crate::sandbox::SandboxConfig;
+
+#[derive(Debug, Clone)]
+pub struct NetworkInfo {
+    pub tap_device: String,
+    pub host_ip: String,
+    pub guest_ip: String,
+    pub subnet_cidr: String,
+}
 
 #[derive(Debug)]
 pub struct VmHandle {
@@ -13,19 +22,30 @@ pub struct VmHandle {
     pub api_socket: PathBuf,
     pub vsock_uds: PathBuf,
     pub work_dir: PathBuf,
+    pub network: Option<NetworkInfo>,
 }
 
 pub struct VmManager {
     pub(crate) config: VmConfig,
+    next_subnet_id: AtomicU32,
 }
 
 impl VmManager {
     pub fn new(config: VmConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            next_subnet_id: AtomicU32::new(0),
+        }
     }
 
     /// Create a VM from snapshot (fast path — <300ms).
-    pub async fn create_from_snapshot(&self, _config: &SandboxConfig) -> Result<VmHandle> {
+    /// If `config.network` is true, falls back to fresh boot with TAP networking
+    /// since the base snapshot does not include a network interface.
+    pub async fn create_from_snapshot(&self, config: &SandboxConfig) -> Result<VmHandle> {
+        if config.network {
+            return self.create_fresh(config).await;
+        }
+
         let vm_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
         let work_dir = tempfile::tempdir()?.keep();
 
@@ -58,11 +78,200 @@ impl VmManager {
             api_socket,
             vsock_uds,
             work_dir,
+            network: None,
         })
     }
 
-    /// Destroy a VM (kill process, cleanup files).
+    /// Fresh-boot a VM with full Firecracker configuration (slower than snapshot restore).
+    /// Used when networking is required, since the base snapshot has no network interface.
+    async fn create_fresh(&self, config: &SandboxConfig) -> Result<VmHandle> {
+        let vm_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
+        let work_dir = tempfile::tempdir()?.keep();
+
+        let rootfs_dest = work_dir.join("rootfs.ext4");
+        cow_copy(&self.config.rootfs_path, &rootfs_dest).await?;
+
+        // Set up host networking before configuring Firecracker
+        let network = if config.network {
+            Some(self.setup_host_network(&vm_id).await?)
+        } else {
+            None
+        };
+
+        let api_socket = work_dir.join("api.sock");
+        let process = tokio::process::Command::new(&self.config.firecracker_bin)
+            .arg("--api-sock")
+            .arg("api.sock")
+            .current_dir(&work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| AgentBoxError::VmCreation(format!("Failed to spawn firecracker: {e}")))?;
+
+        if let Err(e) = self
+            .configure_and_boot(&vm_id, &api_socket, config, &network)
+            .await
+        {
+            // Clean up TAP device on failure; process is dropped automatically
+            if let Some(ref net) = network {
+                teardown_host_network(net).await;
+            }
+            return Err(e);
+        }
+
+        let vsock_uds = work_dir.join("vsock.sock");
+
+        Ok(VmHandle {
+            id: vm_id,
+            process,
+            api_socket,
+            vsock_uds,
+            work_dir,
+            network,
+        })
+    }
+
+    /// Configure Firecracker via API and boot the VM.
+    async fn configure_and_boot(
+        &self,
+        vm_id: &str,
+        api_socket: &std::path::Path,
+        config: &SandboxConfig,
+        network: &Option<NetworkInfo>,
+    ) -> Result<()> {
+        wait_for_socket(api_socket, Duration::from_secs(5)).await?;
+
+        let kernel_path = self
+            .config
+            .kernel_path
+            .canonicalize()
+            .map_err(|e| AgentBoxError::VmCreation(format!("kernel path not found: {e}")))?;
+
+        fc_api_put(
+            api_socket,
+            "/boot-source",
+            serde_json::json!({
+                "kernel_image_path": kernel_path.to_str().unwrap(),
+                "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+            }),
+        )
+        .await?;
+
+        fc_api_put(
+            api_socket,
+            "/drives/rootfs",
+            serde_json::json!({
+                "drive_id": "rootfs",
+                "path_on_host": "rootfs.ext4",
+                "is_root_device": true,
+                "is_read_only": false
+            }),
+        )
+        .await?;
+
+        fc_api_put(
+            api_socket,
+            "/vsock",
+            serde_json::json!({
+                "guest_cid": 3,
+                "uds_path": "vsock.sock"
+            }),
+        )
+        .await?;
+
+        if let Some(ref net) = network {
+            fc_api_put(
+                api_socket,
+                "/network-interfaces/eth0",
+                serde_json::json!({
+                    "iface_id": "eth0",
+                    "guest_mac": generate_mac(vm_id),
+                    "host_dev_name": &net.tap_device
+                }),
+            )
+            .await?;
+        }
+
+        fc_api_put(
+            api_socket,
+            "/machine-config",
+            serde_json::json!({
+                "vcpu_count": config.vcpus,
+                "mem_size_mib": config.memory_mb
+            }),
+        )
+        .await?;
+
+        fc_api_put(
+            api_socket,
+            "/actions",
+            serde_json::json!({"action_type": "InstanceStart"}),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Create a TAP device and configure host networking for a VM.
+    async fn setup_host_network(&self, vm_id: &str) -> Result<NetworkInfo> {
+        let subnet_id = self.next_subnet_id.fetch_add(1, Ordering::Relaxed);
+        let tap_name = format!("tap_{}", &vm_id[..8]);
+
+        let base = subnet_id * 4;
+        let third_octet = base / 256;
+        let fourth_base = base % 256;
+
+        let host_ip = format!("172.16.{}.{}", third_octet, fourth_base + 1);
+        let guest_ip = format!("172.16.{}.{}", third_octet, fourth_base + 2);
+        let subnet_cidr = format!("172.16.{}.{}/30", third_octet, fourth_base);
+
+        run_cmd("ip", &["tuntap", "add", "dev", &tap_name, "mode", "tap"])
+            .await
+            .map_err(|e| AgentBoxError::VmCreation(format!("TAP create failed: {e}")))?;
+
+        run_cmd(
+            "ip",
+            &["addr", "add", &format!("{host_ip}/30"), "dev", &tap_name],
+        )
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("TAP configure failed: {e}")))?;
+
+        run_cmd("ip", &["link", "set", &tap_name, "up"])
+            .await
+            .map_err(|e| AgentBoxError::VmCreation(format!("TAP up failed: {e}")))?;
+
+        // Idempotent — safe to call multiple times
+        let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]).await;
+
+        run_cmd(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                &subnet_cidr,
+                "-j",
+                "MASQUERADE",
+            ],
+        )
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("NAT rule failed: {e}")))?;
+
+        Ok(NetworkInfo {
+            tap_device: tap_name,
+            host_ip,
+            guest_ip,
+            subnet_cidr,
+        })
+    }
+
+    /// Destroy a VM (kill process, cleanup network + files).
     pub async fn destroy(&self, mut vm: VmHandle) -> Result<()> {
+        if let Some(ref net) = vm.network {
+            teardown_host_network(net).await;
+        }
         let _ = vm.process.kill().await;
         let _ = tokio::time::timeout(Duration::from_secs(5), vm.process.wait()).await;
         let _ = tokio::fs::remove_dir_all(&vm.work_dir).await;
@@ -149,6 +358,51 @@ async fn restore_snapshot(
     });
 
     fc_api_put(api_socket, "/snapshot/load", body).await
+}
+
+/// Remove a TAP device and its associated iptables NAT rule (best-effort).
+async fn teardown_host_network(net: &NetworkInfo) {
+    let _ = run_cmd(
+        "iptables",
+        &[
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            &net.subnet_cidr,
+            "-j",
+            "MASQUERADE",
+        ],
+    )
+    .await;
+    let _ = run_cmd("ip", &["link", "del", &net.tap_device]).await;
+}
+
+/// Run a shell command and return an error if it fails.
+async fn run_cmd(cmd: &str, args: &[&str]) -> std::result::Result<(), String> {
+    let output = tokio::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("{cmd} failed to execute: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{cmd} {} failed: {stderr}", args.join(" ")));
+    }
+    Ok(())
+}
+
+/// Generate a locally-administered MAC address from a VM ID.
+fn generate_mac(vm_id: &str) -> String {
+    let bytes: Vec<u8> = vm_id.as_bytes().iter().copied().take(3).collect();
+    format!(
+        "AA:FC:00:{:02x}:{:02x}:{:02x}",
+        bytes.first().copied().unwrap_or(0),
+        bytes.get(1).copied().unwrap_or(0),
+        bytes.get(2).copied().unwrap_or(0)
+    )
 }
 
 #[cfg(test)]
@@ -242,6 +496,7 @@ mod tests {
             api_socket: work_dir.join("api.sock"),
             vsock_uds: work_dir.join("vsock.sock"),
             work_dir: work_dir.clone(),
+            network: None,
         };
 
         let manager = VmManager::new(VmConfig::default());
@@ -264,6 +519,7 @@ mod tests {
             api_socket: PathBuf::from("/tmp/test-running.sock"),
             vsock_uds: PathBuf::from("/tmp/test-running-vsock.sock"),
             work_dir: PathBuf::from("/tmp"),
+            network: None,
         };
 
         assert!(VmManager::is_running(&mut vm));
@@ -286,6 +542,7 @@ mod tests {
             api_socket: PathBuf::from("/tmp/test-killed.sock"),
             vsock_uds: PathBuf::from("/tmp/test-killed-vsock.sock"),
             work_dir: PathBuf::from("/tmp"),
+            network: None,
         };
 
         vm.process.kill().await.unwrap();

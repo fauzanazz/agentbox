@@ -87,6 +87,7 @@ mod tests {
             api_socket: PathBuf::from("/dev/null"),
             vsock_uds: PathBuf::from("/dev/null"),
             work_dir: PathBuf::from("/tmp"),
+            network: None,
         };
         let config = SandboxConfig {
             memory_mb: 128,
