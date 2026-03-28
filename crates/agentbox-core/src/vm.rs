@@ -49,9 +49,10 @@ impl VmManager {
         let vm_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
         let work_dir = tempfile::tempdir()?.keep();
 
-        // 1. CoW copy rootfs
+        // 1. CoW copy rootfs and resize if needed
         let rootfs_dest = work_dir.join("rootfs.ext4");
         cow_copy(&self.config.rootfs_path, &rootfs_dest).await?;
+        resize_rootfs(&rootfs_dest, config.disk_size_mb).await?;
 
         // 2. Spawn Firecracker process
         let api_socket = work_dir.join("api.sock");
@@ -90,6 +91,7 @@ impl VmManager {
 
         let rootfs_dest = work_dir.join("rootfs.ext4");
         cow_copy(&self.config.rootfs_path, &rootfs_dest).await?;
+        resize_rootfs(&rootfs_dest, config.disk_size_mb).await?;
 
         // Set up host networking before configuring Firecracker
         let network = if config.network {
@@ -304,6 +306,44 @@ async fn cow_copy(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Grow a rootfs ext4 image to the requested size (no-op if already big enough).
+async fn resize_rootfs(path: &std::path::Path, size_mb: u32) -> Result<()> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("rootfs stat failed: {e}")))?;
+    let current_mb = (meta.len() / (1024 * 1024)) as u32;
+    if size_mb <= current_mb {
+        return Ok(());
+    }
+
+    // Extend the file to the new size
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("rootfs open failed: {e}")))?;
+    file.set_len(u64::from(size_mb) * 1024 * 1024)
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("rootfs truncate failed: {e}")))?;
+    drop(file);
+
+    // Resize the ext4 filesystem to fill the new space
+    let output = tokio::process::Command::new("resize2fs")
+        .arg(path)
+        .output()
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("resize2fs exec failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AgentBoxError::VmCreation(format!(
+            "resize2fs failed: {stderr}"
+        )));
+    }
+
+    tracing::debug!("Resized rootfs from {current_mb}MB to {size_mb}MB");
+    Ok(())
 }
 
 /// Poll for a Unix socket to appear on disk, with timeout.

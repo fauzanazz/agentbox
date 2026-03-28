@@ -20,6 +20,7 @@ pub struct CreateSandboxRequest {
     pub memory_mb: Option<u32>,
     pub vcpus: Option<u32>,
     pub network: Option<bool>,
+    pub disk_size_mb: Option<u32>,
     pub timeout: Option<u64>,
 }
 
@@ -83,10 +84,15 @@ pub async fn create_sandbox(
     Json(req): Json<CreateSandboxRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let defaults = &state.config.vm.defaults;
+    let disk_size_mb = req
+        .disk_size_mb
+        .unwrap_or(defaults.disk_size_mb)
+        .clamp(512, 2048);
     let config = SandboxConfig {
         memory_mb: req.memory_mb.unwrap_or(defaults.memory_mb),
         vcpus: req.vcpus.unwrap_or(defaults.vcpus),
         network: req.network.unwrap_or(defaults.network),
+        disk_size_mb,
         timeout_secs: req.timeout.unwrap_or(defaults.timeout_secs),
     };
 

@@ -91,6 +91,7 @@ impl Pool {
                         memory_mb: 2048,
                         vcpus: 2,
                         network: false,
+                        disk_size_mb: 512,
                         timeout_secs: 3600,
                     };
                     match vm_manager.create_from_snapshot(&defaults).await {
@@ -295,6 +296,7 @@ mod tests {
             memory_mb: 512,
             vcpus: 1,
             network: false,
+            disk_size_mb: 512,
             timeout_secs: 60,
         };
         let result = pool.claim(config).await;
@@ -325,6 +327,7 @@ mod tests {
             memory_mb: 512,
             vcpus: 1,
             network: false,
+            disk_size_mb: 512,
             timeout_secs: 60,
         };
         let result = pool.claim(config).await;

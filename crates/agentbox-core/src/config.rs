@@ -33,6 +33,7 @@ pub struct VmDefaults {
     pub memory_mb: u32,
     pub vcpus: u32,
     pub network: bool,
+    pub disk_size_mb: u32,
     pub timeout_secs: u64,
 }
 
@@ -66,6 +67,7 @@ impl Default for VmDefaults {
             memory_mb: 2048,
             vcpus: 2,
             network: false,
+            disk_size_mb: 512,
             timeout_secs: 3600,
         }
     }

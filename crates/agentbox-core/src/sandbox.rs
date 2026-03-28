@@ -16,6 +16,7 @@ pub struct SandboxConfig {
     pub memory_mb: u32,
     pub vcpus: u32,
     pub network: bool,
+    pub disk_size_mb: u32,
     pub timeout_secs: u64,
 }
 
@@ -211,12 +212,13 @@ mod tests {
             memory_mb: 512,
             vcpus: 1,
             network: true,
+            disk_size_mb: 1024,
             timeout_secs: 60,
         };
         let json = serde_json::to_value(&cfg).unwrap();
         assert_eq!(
             json,
-            json!({"memory_mb":512,"vcpus":1,"network":true,"timeout_secs":60})
+            json!({"memory_mb":512,"vcpus":1,"network":true,"disk_size_mb":1024,"timeout_secs":60})
         );
         let back: SandboxConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back.memory_mb, 512);
@@ -229,6 +231,7 @@ mod tests {
             memory_mb: 0,
             vcpus: 0,
             network: false,
+            disk_size_mb: 0,
             timeout_secs: 0,
         };
         let back: SandboxConfig =

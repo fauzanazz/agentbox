@@ -93,6 +93,7 @@ mod tests {
             memory_mb: 128,
             vcpus: 1,
             network: false,
+            disk_size_mb: 512,
             timeout_secs: 60,
         };
         let guest_config = GuestConfig::default();
