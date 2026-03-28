@@ -102,6 +102,7 @@ cd "$SNAP_DIR"
 
 firecracker --api-sock api.sock 2>/dev/null &
 FC_PID=$!
+trap 'kill "$FC_PID" 2>/dev/null || true; rm -rf "$SNAP_DIR"' EXIT
 sleep 2
 
 curl --unix-socket api.sock -sf -X PUT "http://localhost/boot-source" \
@@ -122,7 +123,7 @@ curl --unix-socket api.sock -sf -X PUT "http://localhost/actions" \
 
 READY=false
 for i in $(seq 1 60); do
-    if echo -e "CONNECT 5000\n" | timeout 3 socat - "UNIX-CONNECT:vsock.sock" 2>/dev/null | grep -q "^OK"; then
+    if printf "CONNECT 5000\n" | timeout 3 socat - "UNIX-CONNECT:vsock.sock" 2>/dev/null | grep -q "^OK"; then
         READY=true; break
     fi
     sleep 1
@@ -141,6 +142,7 @@ curl --unix-socket api.sock -sf -X PUT "http://localhost/snapshot/create" \
 
 kill "$FC_PID" 2>/dev/null; wait "$FC_PID" 2>/dev/null || true
 rm -rf "$SNAP_DIR"
+trap - EXIT
 
 # ── Write config ──
 if [ ! -f "${DATA_DIR}/config.toml" ]; then

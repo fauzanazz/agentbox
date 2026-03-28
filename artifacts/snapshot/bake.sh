@@ -11,7 +11,7 @@ OUTPUT_DIR="$2"
 
 SNAPSHOT_DIR="$(realpath "${OUTPUT_DIR}")/snapshot"
 VMLINUX="$(realpath "${OUTPUT_DIR}/vmlinux")"
-ROOTFS="${OUTPUT_DIR}/rootfs.ext4"
+ROOTFS="$(realpath "${OUTPUT_DIR}/rootfs.ext4")"
 WORK_DIR="$(pwd)/build/snapshot-bake"
 
 if [ -f "${SNAPSHOT_DIR}/vmstate.bin" ]; then
@@ -72,7 +72,7 @@ curl --unix-socket api.sock -sf -X PUT "http://localhost/actions" \
 echo "Waiting for guest agent..."
 AGENT_READY=false
 for i in $(seq 1 60); do
-    if echo -e "CONNECT 5000\n" | timeout 2 socat - UNIX-CONNECT:vsock.sock 2>/dev/null | grep -q "^OK"; then
+    if printf "CONNECT 5000\n" | timeout 2 socat - UNIX-CONNECT:vsock.sock 2>/dev/null | grep -q "^OK"; then
         echo "Guest agent ready after ${i}s"
         AGENT_READY=true
         break

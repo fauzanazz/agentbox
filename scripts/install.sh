@@ -188,6 +188,7 @@ bake_snapshot() {
     cd "$work_dir"
     firecracker --api-sock api.sock &
     local fc_pid=$!
+    trap "kill $fc_pid 2>/dev/null || true; rm -rf $work_dir" RETURN
     sleep 2
 
     local vmlinux="$(realpath "${DATA_DIR}/vmlinux")"
@@ -215,7 +216,7 @@ bake_snapshot() {
     # Wait for guest agent via Firecracker CONNECT handshake
     local ready=false
     for i in $(seq 1 60); do
-        if echo -e "CONNECT 5000\n" | timeout 3 socat - "UNIX-CONNECT:vsock.sock" 2>/dev/null | grep -q "^OK"; then
+        if printf "CONNECT 5000\n" | timeout 3 socat - "UNIX-CONNECT:vsock.sock" 2>/dev/null | grep -q "^OK"; then
             ready=true
             break
         fi
@@ -236,7 +237,7 @@ bake_snapshot() {
 
     curl --unix-socket api.sock -sf -X PUT "http://localhost/snapshot/create" \
         -H "Content-Type: application/json" \
-        -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"$(realpath "${DATA_DIR}/snapshot/vmstate.bin")\", \"mem_file_path\": \"$(realpath "${DATA_DIR}/snapshot/memory.bin")\"}" > /dev/null
+        -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"${DATA_DIR}/snapshot/vmstate.bin\", \"mem_file_path\": \"${DATA_DIR}/snapshot/memory.bin\"}" > /dev/null
 
     kill "$fc_pid" 2>/dev/null || true
     wait "$fc_pid" 2>/dev/null || true
