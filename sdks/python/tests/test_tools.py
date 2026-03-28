@@ -1,8 +1,13 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from agentbox.tools import SANDBOX_TOOLS, get_tool_definitions, handle_tool_call
 from agentbox.types import ExecResult
+
+
+# ── Format tests (unchanged) ───────────────────────────────────
 
 
 def test_openai_format():
@@ -34,6 +39,9 @@ def test_anthropic_format():
 def test_generic_format():
     tools = get_tool_definitions("generic")
     assert tools == SANDBOX_TOOLS
+
+
+# ── handle_tool_call (raise_on_error=True, default) ────────────
 
 
 def test_handle_tool_call_openai_execute():
@@ -87,17 +95,6 @@ def test_handle_tool_call_read_file():
     sandbox.download.assert_called_once_with("/workspace/data.txt")
 
 
-def test_handle_tool_call_unknown():
-    sandbox = MagicMock()
-
-    result = handle_tool_call(sandbox, {
-        "name": "unknown_tool",
-        "input": {"foo": "bar"},
-    })
-    assert "error" in result
-    assert "Unknown tool" in result["error"]
-
-
 def test_handle_tool_call_openai_string_args():
     sandbox = MagicMock()
     sandbox.exec.return_value = ExecResult(stdout="", stderr="", exit_code=0)
@@ -112,55 +109,99 @@ def test_handle_tool_call_openai_string_args():
     sandbox.exec.assert_called_once_with("ls")
 
 
-def test_handle_tool_call_invalid():
-    sandbox = MagicMock()
+# ── raise_on_error=True (default): exceptions ──────────────────
 
-    result = handle_tool_call(sandbox, {})
+
+def test_handle_tool_call_unknown_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="Unknown tool"):
+        handle_tool_call(sandbox, {
+            "name": "unknown_tool",
+            "input": {"foo": "bar"},
+        })
+
+
+def test_handle_tool_call_invalid_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="Could not parse"):
+        handle_tool_call(sandbox, {})
+
+
+def test_handle_tool_call_invalid_json_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        handle_tool_call(sandbox, {
+            "function": {
+                "name": "execute_code",
+                "arguments": "not valid json{{{",
+            }
+        })
+
+
+def test_handle_tool_call_missing_required_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="Missing required parameter"):
+        handle_tool_call(sandbox, {
+            "name": "execute_code",
+            "input": {"wrong_key": "value"},
+        })
+
+
+def test_handle_tool_call_write_file_missing_params_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="content"):
+        handle_tool_call(sandbox, {
+            "name": "write_file",
+            "input": {"path": "/workspace/test.py"},
+        })
+
+
+def test_handle_tool_call_write_file_non_string_content_raises():
+    sandbox = MagicMock()
+    with pytest.raises(ValueError, match="content"):
+        handle_tool_call(sandbox, {
+            "name": "write_file",
+            "input": {"path": "/workspace/test.py", "content": 12345},
+        })
+    sandbox.upload_content.assert_not_called()
+
+
+# ── raise_on_error=False (legacy): error dicts ─────────────────
+
+
+def test_handle_tool_call_unknown_legacy():
+    sandbox = MagicMock()
+    result = handle_tool_call(sandbox, {
+        "name": "unknown_tool",
+        "input": {"foo": "bar"},
+    }, raise_on_error=False)
+    assert "error" in result
+    assert "Unknown tool" in result["error"]
+
+
+def test_handle_tool_call_invalid_legacy():
+    sandbox = MagicMock()
+    result = handle_tool_call(sandbox, {}, raise_on_error=False)
     assert "error" in result
 
 
-def test_handle_tool_call_invalid_json_args():
+def test_handle_tool_call_invalid_json_legacy():
     sandbox = MagicMock()
-
     result = handle_tool_call(sandbox, {
         "function": {
             "name": "execute_code",
             "arguments": "not valid json{{{",
         }
-    })
+    }, raise_on_error=False)
     assert "error" in result
     assert "Invalid JSON" in result["error"]
 
 
-def test_handle_tool_call_missing_required_params():
+def test_handle_tool_call_missing_params_legacy():
     sandbox = MagicMock()
-
     result = handle_tool_call(sandbox, {
         "name": "execute_code",
         "input": {"wrong_key": "value"},
-    })
+    }, raise_on_error=False)
     assert "error" in result
     assert "Missing required parameter" in result["error"]
-
-
-def test_handle_tool_call_write_file_missing_params():
-    sandbox = MagicMock()
-
-    result = handle_tool_call(sandbox, {
-        "name": "write_file",
-        "input": {"path": "/workspace/test.py"},
-    })
-    assert "error" in result
-    assert "content" in result["error"]
-
-
-def test_handle_tool_call_write_file_non_string_content():
-    sandbox = MagicMock()
-
-    result = handle_tool_call(sandbox, {
-        "name": "write_file",
-        "input": {"path": "/workspace/test.py", "content": 12345},
-    })
-    assert "error" in result
-    assert "content" in result["error"]
-    sandbox.upload_content.assert_not_called()
