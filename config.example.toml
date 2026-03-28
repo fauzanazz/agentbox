@@ -9,8 +9,8 @@ rootfs_path = "/var/lib/agentbox/rootfs.ext4"
 snapshot_path = "/var/lib/agentbox/snapshot"
 
 [vm.defaults]
-memory_mb = 2048
-vcpus = 2
+memory_mb = 512
+vcpus = 1
 network = false
 timeout_secs = 3600
 

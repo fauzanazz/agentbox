@@ -24,6 +24,18 @@ case "$ARCH" in
     *) echo "Unsupported: $ARCH"; exit 1 ;;
 esac
 
+MIRROR="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}"
+
+# Ensure apk is available (not present on Ubuntu/Debian)
+if ! command -v apk > /dev/null 2>&1; then
+    echo "Installing apk-tools-static..."
+    APK_PKG=$(curl -fsSL "${MIRROR}/main/${ALPINE_ARCH}/" | grep -o 'apk-tools-static-[^"]*\.apk' | head -1)
+    curl -fsSL "${MIRROR}/main/${ALPINE_ARCH}/${APK_PKG}" -o /tmp/apk-static.apk
+    tar xzf /tmp/apk-static.apk -C /tmp 2>/dev/null || true
+    sudo install -m 755 /tmp/sbin/apk.static /usr/local/bin/apk
+    rm -f /tmp/apk-static.apk
+fi
+
 # Create ext4 image
 dd if=/dev/zero of="$ROOTFS" bs=1M count="$SIZE_MB"
 mkfs.ext4 -F "$ROOTFS"
@@ -42,8 +54,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Bootstrap Alpine
-MIRROR="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}"
-sudo apk -X "${MIRROR}/main" -U --root "$MOUNT_DIR" \
+sudo apk -X "${MIRROR}/main" -U --allow-untrusted --root "$MOUNT_DIR" \
     --initdb add alpine-base
 
 # Configure repos
@@ -52,8 +63,8 @@ echo "${MIRROR}/main" | sudo tee "${MOUNT_DIR}/etc/apk/repositories"
 echo "${MIRROR}/community" | sudo tee -a "${MOUNT_DIR}/etc/apk/repositories"
 
 # Install packages
-sudo chroot "$MOUNT_DIR" apk update
-sudo chroot "$MOUNT_DIR" apk add \
+sudo chroot "$MOUNT_DIR" apk update --allow-untrusted
+sudo chroot "$MOUNT_DIR" apk add --allow-untrusted \
     python3 py3-pip nodejs npm \
     git ripgrep jq curl wget \
     build-base gcc musl-dev \
