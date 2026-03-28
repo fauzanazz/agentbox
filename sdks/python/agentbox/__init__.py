@@ -12,7 +12,7 @@ from .errors import (
 )
 from .exec_session import ExecSession
 from .sandbox import Sandbox
-from .tools import get_tool_definitions, handle_tool_call
+from .tools import get_tool_definitions, handle_tool_call, handle_tool_call_async
 from .types import ExecResult, FileEntry, PortForwardInfo, SandboxInfo
 
 __all__ = [
@@ -38,5 +38,6 @@ __all__ = [
     # Tools
     "get_tool_definitions",
     "handle_tool_call",
+    "handle_tool_call_async",
 ]
 __version__ = "0.1.0"

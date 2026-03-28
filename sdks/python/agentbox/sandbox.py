@@ -26,19 +26,20 @@ class Sandbox:
         vcpus: int = 2,
         network: bool = False,
         timeout: int = 3600,
+        disk_size_mb: int | None = None,
         api_key: str | None = None,
     ) -> Sandbox:
         """Create a new sandbox. Boots a microVM in <300ms."""
         client = AgentBoxClient(url, api_key=api_key)
-        data = client.post(
-            "/sandboxes",
-            json={
-                "memory_mb": memory_mb,
-                "vcpus": vcpus,
-                "network": network,
-                "timeout": timeout,
-            },
-        )
+        body: dict = {
+            "memory_mb": memory_mb,
+            "vcpus": vcpus,
+            "network": network,
+            "timeout": timeout,
+        }
+        if disk_size_mb is not None:
+            body["disk_size_mb"] = disk_size_mb
+        data = client.post("/sandboxes", json=body)
         return cls(id=data["id"], client=client)
 
     # ── Command execution ───────────────────────────────────────

@@ -229,6 +229,19 @@ export class Sandbox {
       ws.onerror = () => rej(new Error("WebSocket connection failed"));
     });
 
+    // Restore the streaming error handler (onopen promise overwrites it)
+    ws.onerror = () => {
+      messages.push({
+        type: "error",
+        message: "WebSocket error occurred",
+      });
+      done = true;
+      if (resolve) {
+        resolve();
+        resolve = null;
+      }
+    };
+
     try {
       while (true) {
         if (messages.length > 0) {
@@ -269,6 +282,8 @@ export class Sandbox {
           rej(new Error(`Expected ready, got: ${JSON.stringify(msg)}`));
         }
       };
+      ws.onerror = () =>
+        rej(new Error("WebSocket error while waiting for ready"));
     });
 
     // Send exec command
@@ -305,9 +320,7 @@ export class Sandbox {
 
   /** Delete a file in the sandbox. */
   async deleteFile(path: string): Promise<void> {
-    await this.client.delete(
-      `/sandboxes/${this.id}/files?path=${encodeURIComponent(path)}`,
-    );
+    await this.client.delete(`/sandboxes/${this.id}/files`, { path });
   }
 
   /** Create a directory in the sandbox. */

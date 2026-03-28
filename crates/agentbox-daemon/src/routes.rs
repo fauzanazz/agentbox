@@ -7,8 +7,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Json;
 use axum::Router;
+use percent_encoding::percent_decode_str;
 use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
 use crate::state::AppState;
@@ -50,9 +51,12 @@ async fn require_api_key(
     // Fallback: check ?token= query parameter (for WebSocket connections)
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
-            if let Some(token) = pair.strip_prefix("token=") {
-                if token == expected {
-                    return next.run(req).await;
+            if let Some(raw_token) = pair.strip_prefix("token=") {
+                // Percent-decode the token (SDKs encode with encodeURIComponent)
+                if let Ok(token) = percent_decode_str(raw_token).decode_utf8() {
+                    if *token == **expected {
+                        return next.run(req).await;
+                    }
                 }
             }
         }
@@ -94,9 +98,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Public routes — no auth required
     let public = Router::new().route("/health", get(handlers::health_check));
 
+    // Use path-only spans to avoid leaking query params (e.g., ?token=) in logs
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|req: &axum::http::Request<_>| {
+            tracing::info_span!(
+                "request",
+                method = %req.method(),
+                uri = %req.uri().path(),
+            )
+        })
+        .on_response(DefaultOnResponse::new());
+
     protected
         .merge(public)
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        .layer(trace_layer)
         .with_state(state)
 }

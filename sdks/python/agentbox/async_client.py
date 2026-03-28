@@ -45,9 +45,11 @@ class AsyncAgentBoxClient:
         _raise_for_status(resp)
         return resp.json()
 
-    async def delete(self, path: str, **kwargs) -> dict:
+    async def delete(self, path: str, **kwargs) -> dict | None:
         resp = await self._client.delete(path, **kwargs)
         _raise_for_status(resp)
+        if resp.status_code == 204:
+            return None
         return resp.json()
 
     def ws_url(self, path: str) -> str:

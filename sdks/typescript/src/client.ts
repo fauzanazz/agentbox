@@ -84,12 +84,22 @@ export class AgentBoxClient {
     return resp.json();
   }
 
-  async delete(path: string): Promise<unknown> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
+  async delete(
+    path: string,
+    params?: Record<string, string>,
+  ): Promise<unknown> {
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        url.searchParams.set(k, v);
+      }
+    }
+    const resp = await fetch(url.toString(), {
       method: "DELETE",
       headers: this.headers,
     });
     if (!resp.ok) await throwForStatus("DELETE", path, resp);
+    if (resp.status === 204) return {};
     return resp.json();
   }
 

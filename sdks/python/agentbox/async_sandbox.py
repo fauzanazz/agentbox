@@ -26,19 +26,20 @@ class AsyncSandbox:
         vcpus: int = 2,
         network: bool = False,
         timeout: int = 3600,
+        disk_size_mb: int | None = None,
         api_key: str | None = None,
     ) -> AsyncSandbox:
         """Create a new sandbox. Boots a microVM in <300ms."""
         client = AsyncAgentBoxClient(url, api_key=api_key)
-        data = await client.post(
-            "/sandboxes",
-            json={
-                "memory_mb": memory_mb,
-                "vcpus": vcpus,
-                "network": network,
-                "timeout": timeout,
-            },
-        )
+        body: dict = {
+            "memory_mb": memory_mb,
+            "vcpus": vcpus,
+            "network": network,
+            "timeout": timeout,
+        }
+        if disk_size_mb is not None:
+            body["disk_size_mb"] = disk_size_mb
+        data = await client.post("/sandboxes", json=body)
         return cls(id=data["id"], client=client)
 
     # ── Command execution ───────────────────────────────────────
@@ -100,6 +101,15 @@ class AsyncSandbox:
         return ExecSession(ws)
 
     # ── File operations ─────────────────────────────────────────
+
+    async def upload(self, local_path: str, remote_path: str) -> None:
+        """Upload a file to the sandbox."""
+        with open(local_path, "rb") as f:
+            await self._client.post(
+                f"/sandboxes/{self.id}/files",
+                files={"file": f},
+                data={"path": remote_path},
+            )
 
     async def upload_content(self, content: bytes, remote_path: str) -> None:
         """Upload content directly to the sandbox."""
