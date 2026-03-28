@@ -32,6 +32,12 @@ pub enum AgentBoxError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Path traversal rejected: {0}")]
+    PathTraversal(String),
+
+    #[error("Port forward error: {0}")]
+    PortForward(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -102,6 +108,18 @@ mod tests {
         assert_eq!(e.to_string(), "Configuration error: missing field");
     }
 
+    #[test]
+    fn display_path_traversal() {
+        let e = AgentBoxError::PathTraversal("../etc/passwd".into());
+        assert_eq!(e.to_string(), "Path traversal rejected: ../etc/passwd");
+    }
+
+    #[test]
+    fn display_port_forward() {
+        let e = AgentBoxError::PortForward("connection refused".into());
+        assert_eq!(e.to_string(), "Port forward error: connection refused");
+    }
+
     // ── From trait conversions ───────────────────────────────────
 
     #[test]
@@ -148,6 +166,8 @@ mod tests {
             AgentBoxError::ApiTransport("x".into()),
             AgentBoxError::Timeout("x".into()),
             AgentBoxError::Config("x".into()),
+            AgentBoxError::PathTraversal("x".into()),
+            AgentBoxError::PortForward("x".into()),
         ];
         for e in &cases {
             assert!(e.source().is_none(), "Expected no source for: {e}");

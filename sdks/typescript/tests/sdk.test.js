@@ -101,3 +101,196 @@ describe("Tool Definitions", async () => {
     ]);
   });
 });
+
+describe("handleToolCall", async () => {
+  const { handleToolCall } = await import("../dist/tools.js");
+
+  function mockSandbox(overrides = {}) {
+    return {
+      exec:
+        overrides.exec ??
+        (async (cmd) => ({ stdout: "output", stderr: "", exit_code: 0 })),
+      uploadContent:
+        overrides.uploadContent ?? (async (content, path) => {}),
+      download:
+        overrides.download ??
+        (async (path) => new TextEncoder().encode("file content")),
+    };
+  }
+
+  it("handles execute_code with Anthropic format", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "execute_code",
+      input: { command: "echo hi" },
+    });
+    assert.strictEqual(result.stdout, "output");
+    assert.strictEqual(result.exit_code, 0);
+  });
+
+  it("handles execute_code with OpenAI format", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      function: { name: "execute_code", arguments: { command: "ls" } },
+    });
+    assert.strictEqual(result.stdout, "output");
+    assert.strictEqual(result.exit_code, 0);
+  });
+
+  it("handles execute_code with stringified arguments", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "execute_code",
+      arguments: JSON.stringify({ command: "pwd" }),
+    });
+    assert.strictEqual(result.stdout, "output");
+    assert.strictEqual(result.exit_code, 0);
+  });
+
+  it("returns error for execute_code missing command", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "execute_code",
+      input: {},
+    });
+    assert.ok(result.error);
+    assert.ok(result.error.toLowerCase().includes("command"));
+  });
+
+  it("handles write_file correctly", async () => {
+    let calledContent, calledPath;
+    const sandbox = mockSandbox({
+      uploadContent: async (content, path) => {
+        calledContent = content;
+        calledPath = path;
+      },
+    });
+    const result = await handleToolCall(sandbox, {
+      name: "write_file",
+      input: { path: "/tmp/test.txt", content: "hello world" },
+    });
+    assert.strictEqual(result.status, "written");
+    assert.strictEqual(calledPath, "/tmp/test.txt");
+    assert.deepStrictEqual(
+      calledContent,
+      new TextEncoder().encode("hello world"),
+    );
+  });
+
+  it("returns error for write_file missing path", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "write_file",
+      input: { content: "hello" },
+    });
+    assert.ok(result.error);
+    assert.ok(result.error.toLowerCase().includes("path"));
+  });
+
+  it("returns error for write_file missing content", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "write_file",
+      input: { path: "/tmp/test.txt" },
+    });
+    assert.ok(result.error);
+    assert.ok(result.error.toLowerCase().includes("content"));
+  });
+
+  it("handles read_file correctly", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "read_file",
+      input: { path: "/tmp/test.txt" },
+    });
+    assert.strictEqual(result.content, "file content");
+  });
+
+  it("returns error for read_file missing path", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "read_file",
+      input: {},
+    });
+    assert.ok(result.error);
+    assert.ok(result.error.toLowerCase().includes("path"));
+  });
+
+  it("returns error for unknown tool", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "delete_everything",
+      input: {},
+    });
+    assert.ok(result.error);
+    assert.ok(result.error.includes("Unknown"));
+  });
+
+  it("returns error for unparseable tool call", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {});
+    assert.ok(result.error);
+  });
+
+  it("returns error for invalid JSON string arguments", async () => {
+    const sandbox = mockSandbox();
+    const result = await handleToolCall(sandbox, {
+      name: "execute_code",
+      arguments: "not json{",
+    });
+    assert.ok(result.error);
+  });
+});
+
+describe("Tool Definition Schema Validation", async () => {
+  const { getToolDefinitions } = await import("../dist/tools.js");
+
+  it("OpenAI format has correct nested structure", () => {
+    const tools = getToolDefinitions("openai");
+    for (const tool of tools) {
+      assert.strictEqual(tool.type, "function");
+      assert.ok(tool.function.name, "missing function.name");
+      assert.ok(tool.function.description, "missing function.description");
+      assert.strictEqual(tool.function.parameters.type, "object");
+      assert.ok(tool.function.parameters.properties, "missing properties");
+      assert.ok(
+        Array.isArray(tool.function.parameters.required),
+        "required should be an array",
+      );
+    }
+  });
+
+  it("Anthropic format has correct nested structure", () => {
+    const tools = getToolDefinitions("anthropic");
+    for (const tool of tools) {
+      assert.ok(tool.name, "missing name");
+      assert.ok(tool.description, "missing description");
+      assert.strictEqual(tool.input_schema.type, "object");
+    }
+  });
+
+  it("execute_code requires command", () => {
+    const tools = getToolDefinitions("generic");
+    const tool = tools.find((t) => t.name === "execute_code");
+    assert.ok(tool, "execute_code tool not found");
+    assert.deepStrictEqual(tool.required, ["command"]);
+  });
+
+  it("write_file requires path and content", () => {
+    const tools = getToolDefinitions("generic");
+    const tool = tools.find((t) => t.name === "write_file");
+    assert.ok(tool, "write_file tool not found");
+    assert.ok(tool.required.includes("path"), "missing path in required");
+    assert.ok(
+      tool.required.includes("content"),
+      "missing content in required",
+    );
+  });
+
+  it("read_file requires path", () => {
+    const tools = getToolDefinitions("generic");
+    const tool = tools.find((t) => t.name === "read_file");
+    assert.ok(tool, "read_file tool not found");
+    assert.deepStrictEqual(tool.required, ["path"]);
+  });
+});

@@ -1,5 +1,7 @@
 mod exec;
 mod files;
+mod path_security;
+mod port_forward;
 mod protocol;
 mod server;
 

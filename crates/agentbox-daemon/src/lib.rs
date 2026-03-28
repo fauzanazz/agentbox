@@ -3,6 +3,7 @@ use std::sync::Arc;
 use agentbox_core::config::AgentBoxConfig;
 
 pub mod handlers;
+pub mod port_forward;
 pub mod routes;
 pub mod state;
 pub mod ws;

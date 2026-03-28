@@ -7,6 +7,7 @@ edition.workspace = true
 agentbox-core = { path = "../agentbox-core" }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tokio = { workspace = true }
+tokio-util = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

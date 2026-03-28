@@ -123,6 +123,14 @@ impl Sandbox {
         self.vsock.list_files(path).await
     }
 
+    pub async fn delete_file(&self, path: &str) -> crate::error::Result<()> {
+        self.vsock.delete_file(path).await
+    }
+
+    pub async fn mkdir(&self, path: &str) -> crate::error::Result<()> {
+        self.vsock.mkdir(path).await
+    }
+
     pub async fn is_alive(&self) -> bool {
         self.vsock.ping().await.unwrap_or(false)
     }

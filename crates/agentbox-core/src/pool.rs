@@ -3,12 +3,28 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
+use serde::Serialize;
+
 use crate::{
     config::{GuestConfig, PoolConfig},
     error::{AgentBoxError, Result},
     sandbox::*,
     vm::VmManager,
 };
+
+#[derive(Debug, Serialize)]
+pub struct PoolStatus {
+    pub warm_vms: usize,
+    pub active_sandboxes: usize,
+    pub config: PoolStatusConfig,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PoolStatusConfig {
+    pub min_size: usize,
+    pub max_size: usize,
+    pub idle_timeout_secs: u64,
+}
 
 struct PooledSandbox {
     sandbox: Sandbox,
@@ -173,6 +189,25 @@ impl Pool {
         Ok(())
     }
 
+    /// Get current pool status. Non-blocking — uses try_lock/try_read to avoid contention.
+    pub fn status(&self) -> PoolStatus {
+        let warm_vms = self
+            .available
+            .try_lock()
+            .map(|guard| guard.len())
+            .unwrap_or(0);
+        let active_sandboxes = self.active.try_read().map(|guard| guard.len()).unwrap_or(0);
+        PoolStatus {
+            warm_vms,
+            active_sandboxes,
+            config: PoolStatusConfig {
+                min_size: self.config.min_size,
+                max_size: self.config.max_size,
+                idle_timeout_secs: self.config.idle_timeout_secs,
+            },
+        }
+    }
+
     /// List active sandboxes. Synchronous — uses try_read to avoid blocking.
     pub fn list_active(&self) -> Vec<SandboxInfo> {
         self.active
@@ -219,5 +254,65 @@ mod tests {
     fn test_pool_list_active_empty() {
         let pool = test_pool();
         assert!(pool.list_active().is_empty());
+    }
+
+    #[test]
+    fn test_pool_status() {
+        let pool = test_pool();
+        let status = pool.status();
+        assert_eq!(status.warm_vms, 0);
+        assert_eq!(status.active_sandboxes, 0);
+        assert_eq!(status.config.min_size, 2);
+        assert_eq!(status.config.max_size, 10);
+    }
+
+    #[tokio::test]
+    async fn test_pool_claim_exhausted_when_max_size_zero() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 0,
+            idle_timeout_secs: 3600,
+        };
+        let vm_manager = Arc::new(VmManager::new(VmConfig::default()));
+        let pool = Pool::new(pool_config, GuestConfig::default(), vm_manager);
+
+        let config = SandboxConfig {
+            memory_mb: 512,
+            vcpus: 1,
+            network: false,
+            timeout_secs: 60,
+        };
+        let result = pool.claim(config).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AgentBoxError::PoolExhausted));
+    }
+
+    #[tokio::test]
+    async fn test_pool_shutdown_on_empty_pool() {
+        let pool = test_pool();
+        let result = pool.shutdown().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_pool_claim_on_demand_fails_with_bad_config() {
+        // Use max_size > 0 so we enter the on-demand creation path
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            idle_timeout_secs: 3600,
+        };
+        // VmManager with default (nonexistent) paths should fail during create_from_snapshot
+        let vm_manager = Arc::new(VmManager::new(VmConfig::default()));
+        let pool = Pool::new(pool_config, GuestConfig::default(), vm_manager);
+
+        let config = SandboxConfig {
+            memory_mb: 512,
+            vcpus: 1,
+            network: false,
+            timeout_secs: 60,
+        };
+        let result = pool.claim(config).await;
+        assert!(result.is_err());
     }
 }

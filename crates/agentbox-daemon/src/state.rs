@@ -6,10 +6,13 @@ use agentbox_core::pool::Pool;
 use agentbox_core::sandbox::{Sandbox, SandboxId};
 use tokio::sync::Mutex;
 
+use crate::port_forward::PortForwardEntry;
+
 pub struct AppState {
     pub pool: Arc<Pool>,
     pub config: Arc<AgentBoxConfig>,
     pub sandboxes: Mutex<HashMap<SandboxId, Arc<Mutex<Sandbox>>>>,
+    pub port_forwards: Mutex<HashMap<String, HashMap<u16, PortForwardEntry>>>,
 }
 
 impl AppState {
@@ -18,6 +21,7 @@ impl AppState {
             pool,
             config,
             sandboxes: Mutex::new(HashMap::new()),
+            port_forwards: Mutex::new(HashMap::new()),
         }
     }
 

@@ -1,7 +1,7 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::protocol::{read_message, write_message, Response};
-use crate::{exec, files};
+use crate::{exec, files, port_forward};
 
 pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream: S) {
     let (mut reader, mut writer) = tokio::io::split(stream);
@@ -25,9 +25,22 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 exec::handle_exec_stream(request.id, request.params, &mut writer).await;
                 continue;
             }
+            "port_forward_connect" => {
+                port_forward::handle_port_forward_connect(
+                    request.id,
+                    request.params,
+                    reader,
+                    writer,
+                )
+                .await;
+                return;
+            }
             "read_file" => files::handle_read(request.id, request.params).await,
             "write_file" => files::handle_write(request.id, request.params).await,
             "list_files" => files::handle_list(request.id, request.params).await,
+            "delete_file" => files::handle_delete(request.id, request.params).await,
+            "mkdir" => files::handle_mkdir(request.id, request.params).await,
+            "signal" => exec::handle_signal(request.id, request.params).await,
             _ => Response {
                 id: request.id,
                 result: None,
@@ -199,7 +212,9 @@ mod tests {
 
     #[tokio::test]
     async fn write_then_read_file_roundtrip() {
+        let _lock = crate::path_security::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("AGENTBOX_WORKSPACE_DIR", dir.path().to_str().unwrap()) };
         let path = dir.path().join("test.txt").to_str().unwrap().to_string();
         let content = base64::engine::general_purpose::STANDARD.encode(b"hello world");
 
@@ -236,7 +251,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_files_on_temp_dir() {
+        let _lock = crate::path_security::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("AGENTBOX_WORKSPACE_DIR", dir.path().to_str().unwrap()) };
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
         std::fs::write(dir.path().join("b.txt"), "b").unwrap();
         let dir_path = dir.path().to_str().unwrap().to_string();

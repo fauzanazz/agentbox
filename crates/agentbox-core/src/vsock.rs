@@ -30,6 +30,14 @@ impl VsockClient {
         Self { uds_path, port }
     }
 
+    pub fn uds_path(&self) -> &std::path::Path {
+        &self.uds_path
+    }
+
+    pub fn port(&self) -> u32 {
+        self.port
+    }
+
     /// Establish a vsock connection to the guest agent.
     ///
     /// Performs the Firecracker CONNECT handshake:
@@ -269,6 +277,51 @@ impl VsockClient {
         )
         .await?;
         Ok(())
+    }
+
+    /// Delete a file or directory on the guest.
+    pub async fn delete_file(&self, path: &str) -> Result<()> {
+        let mut stream = self.connect().await?;
+        request(
+            &mut stream,
+            "delete_file",
+            Some(serde_json::json!({ "path": path })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Create a directory (and parents) on the guest.
+    pub async fn mkdir(&self, path: &str) -> Result<()> {
+        let mut stream = self.connect().await?;
+        request(
+            &mut stream,
+            "mkdir",
+            Some(serde_json::json!({ "path": path })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Open a vsock connection for port forwarding.
+    ///
+    /// Sends a `port_forward_connect` request, waits for the guest agent to
+    /// connect to the target port, then returns the raw stream for
+    /// bidirectional byte proxying.
+    pub async fn open_port_forward(&self, guest_port: u16) -> Result<UnixStream> {
+        let mut stream = self.connect().await?;
+        let result = request(
+            &mut stream,
+            "port_forward_connect",
+            Some(serde_json::json!({"port": guest_port})),
+        )
+        .await?;
+        if result.get("status").and_then(|v| v.as_str()) != Some("connected") {
+            return Err(AgentBoxError::PortForward(format!(
+                "Guest agent refused port forward: {result}"
+            )));
+        }
+        Ok(stream)
     }
 
     /// List files in a directory on the guest.

@@ -132,10 +132,12 @@ async fn test_exec() {
 
 #[tokio::test]
 async fn test_file_write_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    // Set workspace to temp dir so path validation passes in the spawned agent
+    std::env::set_var("AGENTBOX_WORKSPACE_DIR", dir.path().to_str().unwrap());
     let server = TestServer::start().await;
     let mut stream = server.connect().await;
 
-    let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("integration_test.txt");
     let content = b"hello from integration test";
     let encoded = base64::engine::general_purpose::STANDARD.encode(content);

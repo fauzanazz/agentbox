@@ -35,6 +35,47 @@ pub struct FilesQuery {
     pub list: Option<bool>,
 }
 
+#[derive(Deserialize)]
+pub struct SignalRequest {
+    pub signal: i32,
+}
+
+#[derive(Deserialize)]
+pub struct CreatePortForwardRequest {
+    pub guest_port: u16,
+}
+
+// ── Path validation ───────────────────────────────────────────────
+
+/// Validate that a file path is safe to forward to the guest agent.
+/// Defense-in-depth: the guest-agent also validates, but we reject
+/// obviously malicious paths before they cross the vsock boundary.
+fn validate_sandbox_path(path: &str) -> Result<(), AppError> {
+    if path.contains('\0') {
+        return Err(AppError::BadRequest("Path contains null byte".into()));
+    }
+
+    let target = std::path::Path::new(path);
+    let mut normalized = std::path::PathBuf::new();
+    for component in target.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other),
+        }
+    }
+
+    if !normalized.starts_with("/workspace") {
+        return Err(AppError::BadRequest(format!(
+            "Path must be under /workspace, got: {path}"
+        )));
+    }
+
+    Ok(())
+}
+
 // ── Handlers ───────────────────────────────────────────────────────
 
 pub async fn create_sandbox(
@@ -78,7 +119,9 @@ pub async fn destroy_sandbox(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let sandbox_id = SandboxId(id);
+    let sandbox_id = SandboxId(id.clone());
+
+    // Remove sandbox first — only clean up port forwards on success.
     let sandbox = state
         .remove_sandbox(&sandbox_id)
         .await
@@ -88,6 +131,14 @@ pub async fn destroy_sandbox(
                 AppError::BadRequest("Sandbox is currently in use by another request".into())
             }
         })?;
+
+    // Clean up port forwards after confirmed removal.
+    if let Some(forwards) = state.port_forwards.lock().await.remove(&id) {
+        for (_, entry) in forwards {
+            entry.stop();
+        }
+    }
+
     state.pool.release(sandbox).await?;
     Ok(Json(serde_json::json!({"status": "destroyed"})))
 }
@@ -147,6 +198,7 @@ pub async fn upload_file(
     if path.is_empty() {
         path = "/workspace/upload".to_string();
     }
+    validate_sandbox_path(&path)?;
 
     let size = content.len();
     sb.lock().await.upload(&content, &path).await?;
@@ -164,6 +216,7 @@ pub async fn handle_files_get(
         .await
         .ok_or(AppError::NotFound("Sandbox not found".into()))?;
     let path = query.path.unwrap_or_else(|| "/workspace".to_string());
+    validate_sandbox_path(&path)?;
 
     if query.list.unwrap_or(false) {
         let files = sb.lock().await.list_files(&path).await?;
@@ -176,6 +229,155 @@ pub async fn handle_files_get(
         )
             .into_response())
     }
+}
+
+pub async fn pool_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let status = state.pool.status();
+    Json(status)
+}
+
+pub async fn send_signal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SignalRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let sandbox_id = SandboxId(id);
+    let sb = state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+    sb.lock().await.send_signal(req.signal).await?;
+    Ok(Json(
+        serde_json::json!({"status": "signal_sent", "signal": req.signal}),
+    ))
+}
+
+pub async fn delete_file(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<FilesQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let sandbox_id = SandboxId(id);
+    let sb = state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+    let path = query.path.ok_or(AppError::BadRequest(
+        "Missing 'path' query parameter".into(),
+    ))?;
+    validate_sandbox_path(&path)?;
+    sb.lock().await.delete_file(&path).await?;
+    Ok(Json(serde_json::json!({"status": "deleted", "path": path})))
+}
+
+pub async fn mkdir(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<FilesQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let sandbox_id = SandboxId(id);
+    let sb = state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+    let path = query.path.ok_or(AppError::BadRequest(
+        "Missing 'path' query parameter".into(),
+    ))?;
+    validate_sandbox_path(&path)?;
+    sb.lock().await.mkdir(&path).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({"status": "created", "path": path})),
+    ))
+}
+
+pub async fn create_port_forward(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<CreatePortForwardRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if req.guest_port == 0 {
+        return Err(AppError::BadRequest(
+            "guest_port must be between 1 and 65535".into(),
+        ));
+    }
+
+    let sandbox_id = SandboxId(id.clone());
+    let sb = state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+
+    let sandbox = sb.lock().await;
+    let uds_path = sandbox.vsock.uds_path().to_path_buf();
+    let vsock_port = sandbox.vsock.port();
+    drop(sandbox);
+
+    // Hold the lock across check-and-insert to prevent TOCTOU races.
+    let mut forwards = state.port_forwards.lock().await;
+    let sandbox_forwards = forwards.entry(id.clone()).or_default();
+
+    if sandbox_forwards.contains_key(&req.guest_port) {
+        return Err(AppError::BadRequest(format!(
+            "Port {} is already forwarded",
+            req.guest_port
+        )));
+    }
+
+    let max = crate::port_forward::max_forwards_per_sandbox();
+    if sandbox_forwards.len() >= max {
+        return Err(AppError::BadRequest(format!(
+            "Maximum of {max} port forwards per sandbox reached"
+        )));
+    }
+
+    let entry = crate::port_forward::start_forward(uds_path, vsock_port, req.guest_port).await?;
+    let info = entry.info();
+    sandbox_forwards.insert(req.guest_port, entry);
+
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+pub async fn list_port_forwards(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let sandbox_id = SandboxId(id.clone());
+    state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+
+    let forwards = state.port_forwards.lock().await;
+    let ports: Vec<_> = forwards
+        .get(&id)
+        .map(|m| m.values().map(|e| e.info()).collect())
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!({"ports": ports})))
+}
+
+pub async fn remove_port_forward(
+    State(state): State<Arc<AppState>>,
+    Path((id, guest_port)): Path<(String, u16)>,
+) -> Result<impl IntoResponse, AppError> {
+    let sandbox_id = SandboxId(id.clone());
+    state
+        .get_sandbox(&sandbox_id)
+        .await
+        .ok_or(AppError::NotFound("Sandbox not found".into()))?;
+
+    let mut forwards = state.port_forwards.lock().await;
+    let entry = forwards
+        .get_mut(&id)
+        .and_then(|m| m.remove(&guest_port))
+        .ok_or(AppError::NotFound(format!(
+            "Port forward for port {guest_port} not found"
+        )))?;
+
+    entry.stop();
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -203,6 +405,7 @@ impl From<AgentBoxError> for AppError {
         match e {
             AgentBoxError::PoolExhausted => AppError::ServiceUnavailable(e.to_string()),
             AgentBoxError::VmNotFound(_) => AppError::NotFound(e.to_string()),
+            AgentBoxError::PathTraversal(msg) => AppError::BadRequest(msg),
             _ => AppError::Internal(e.to_string()),
         }
     }
@@ -396,5 +599,102 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert!(resp.status().is_client_error());
+    }
+
+    // ── Path validation ──────────────────────────────────────────
+
+    #[test]
+    fn validate_sandbox_path_valid() {
+        assert!(validate_sandbox_path("/workspace/foo.txt").is_ok());
+    }
+
+    #[test]
+    fn validate_sandbox_path_traversal_rejected() {
+        assert!(validate_sandbox_path("/workspace/../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_path_outside_rejected() {
+        assert!(validate_sandbox_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_path_null_byte_rejected() {
+        assert!(validate_sandbox_path("/workspace/foo\0bar").is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_path_prefix_not_confused() {
+        // /workspace2 must NOT match /workspace
+        assert!(validate_sandbox_path("/workspace2/evil").is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_path_relative_rejected() {
+        // Relative paths don't start with /workspace and must be rejected
+        assert!(validate_sandbox_path("workspace/foo.txt").is_err());
+        assert!(validate_sandbox_path("foo.txt").is_err());
+    }
+
+    // ── List & health (no VMs needed) ────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_sandboxes_returns_empty_array() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/sandboxes")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_expected_format() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/health")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert!(json["pool"]["active"].is_number());
+        assert_eq!(json["pool"]["active"], 0);
+    }
+
+    // ── Error body consistency ───────────────────────────────────
+
+    #[tokio::test]
+    async fn all_error_variants_produce_json_error_key() {
+        let variants = vec![
+            AppError::NotFound("nf".into()),
+            AppError::BadRequest("br".into()),
+            AppError::ServiceUnavailable("su".into()),
+            AppError::Internal("int".into()),
+        ];
+        for err in variants {
+            let resp = err.into_response();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                json.get("error").is_some(),
+                "All errors must have 'error' key"
+            );
+            assert!(json["error"].is_string());
+        }
     }
 }

@@ -199,4 +199,98 @@ mod tests {
         let result = wait_for_socket(&sock_path, Duration::from_secs(2)).await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_cow_copy_creates_destination_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let dest = dir.path().join("destination.txt");
+
+        tokio::fs::write(&src, b"hello agentbox").await.unwrap();
+
+        let result = cow_copy(&src, &dest).await;
+        assert!(result.is_ok());
+
+        let content = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(content, "hello agentbox");
+    }
+
+    #[tokio::test]
+    async fn test_cow_copy_nonexistent_source_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("nonexistent.txt");
+        let dest = dir.path().join("destination.txt");
+
+        let result = cow_copy(&src, &dest).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_destroy_cleans_up_work_dir() {
+        let work_dir = tempfile::tempdir().unwrap().keep();
+        assert!(work_dir.exists());
+
+        let process = tokio::process::Command::new("sleep")
+            .arg("3600")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+
+        let vm = VmHandle {
+            id: "test-destroy".to_string(),
+            process,
+            api_socket: work_dir.join("api.sock"),
+            vsock_uds: work_dir.join("vsock.sock"),
+            work_dir: work_dir.clone(),
+        };
+
+        let manager = VmManager::new(VmConfig::default());
+        let result = manager.destroy(vm).await;
+        assert!(result.is_ok());
+        assert!(!work_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_is_running_true_for_live_process() {
+        let process = tokio::process::Command::new("sleep")
+            .arg("3600")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+
+        let mut vm = VmHandle {
+            id: "test-running".to_string(),
+            process,
+            api_socket: PathBuf::from("/tmp/test-running.sock"),
+            vsock_uds: PathBuf::from("/tmp/test-running-vsock.sock"),
+            work_dir: PathBuf::from("/tmp"),
+        };
+
+        assert!(VmManager::is_running(&mut vm));
+
+        // Clean up: kill the process
+        let _ = vm.process.kill().await;
+    }
+
+    #[tokio::test]
+    async fn test_is_running_false_after_kill() {
+        let process = tokio::process::Command::new("sleep")
+            .arg("3600")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+
+        let mut vm = VmHandle {
+            id: "test-killed".to_string(),
+            process,
+            api_socket: PathBuf::from("/tmp/test-killed.sock"),
+            vsock_uds: PathBuf::from("/tmp/test-killed-vsock.sock"),
+            work_dir: PathBuf::from("/tmp"),
+        };
+
+        vm.process.kill().await.unwrap();
+        vm.process.wait().await.unwrap();
+
+        assert!(!VmManager::is_running(&mut vm));
+    }
 }

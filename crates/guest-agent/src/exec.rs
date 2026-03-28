@@ -1,10 +1,15 @@
 use base64::Engine;
 use serde_json::Value;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{write_message, Response, StreamMessage};
+
+/// Tracks the PID of the currently running streaming exec process.
+/// Allows signal requests (arriving on a separate connection) to target it.
+static CURRENT_EXEC_PID: AtomicU32 = AtomicU32::new(0);
 
 pub async fn handle_exec(id: u64, params: Option<Value>) -> Response {
     let (command, timeout_secs) = match extract_exec_params(&params) {
@@ -125,6 +130,11 @@ pub async fn handle_exec_stream<W: AsyncWriteExt + Unpin>(
         }
     };
 
+    // Store PID so signal requests on other connections can target this process
+    if let Some(pid) = child.id() {
+        CURRENT_EXEC_PID.store(pid, Ordering::SeqCst);
+    }
+
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
 
@@ -194,12 +204,60 @@ pub async fn handle_exec_stream<W: AsyncWriteExt + Unpin>(
         Err(_) => -1,
     };
 
+    // Clear the stored PID — process has exited
+    CURRENT_EXEC_PID.store(0, Ordering::SeqCst);
+
     let final_resp = Response {
         id,
         result: Some(serde_json::json!({ "exit_code": exit_code })),
         error: None,
     };
     let _ = write_message(writer, &final_resp).await;
+}
+
+pub async fn handle_signal(id: u64, params: Option<Value>) -> Response {
+    let signal = match params
+        .as_ref()
+        .and_then(|p| p.get("signal"))
+        .and_then(|v| v.as_i64())
+    {
+        Some(s) => s as i32,
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some("Missing 'signal' parameter".to_string()),
+            }
+        }
+    };
+
+    let pid = CURRENT_EXEC_PID.load(Ordering::SeqCst);
+    if pid == 0 {
+        return Response {
+            id,
+            result: None,
+            error: Some("No running process to signal".to_string()),
+        };
+    }
+
+    // SAFETY: We are sending a POSIX signal to a known PID.
+    let ret = unsafe { libc::kill(pid as i32, signal) };
+    if ret == 0 {
+        Response {
+            id,
+            result: Some(
+                serde_json::json!({"status": "signal_sent", "signal": signal, "pid": pid}),
+            ),
+            error: None,
+        }
+    } else {
+        let err = std::io::Error::last_os_error();
+        Response {
+            id,
+            result: None,
+            error: Some(format!("Failed to send signal: {err}")),
+        }
+    }
 }
 
 fn extract_exec_params(params: &Option<Value>) -> Result<(String, u64), String> {
