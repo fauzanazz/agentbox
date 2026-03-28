@@ -10,3 +10,9 @@ error_log="/var/log/guest-agent.log"
 depend() {
     after localmount
 }
+
+start_pre() {
+    # Bring up loopback so port forwarding (vsock -> 127.0.0.1) works
+    # even when full networking is disabled
+    /sbin/ip link set lo up 2>/dev/null || true
+}

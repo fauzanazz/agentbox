@@ -7,6 +7,47 @@ mod server;
 
 use tokio::net::TcpListener;
 
+/// Bring up the loopback interface so port forwarding (which connects to
+/// 127.0.0.1 inside the guest) works even when full networking is disabled.
+#[cfg(target_os = "linux")]
+fn bring_up_loopback() {
+    use std::ffi::CString;
+    use std::mem;
+
+    unsafe {
+        let sock = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+        if sock < 0 {
+            tracing::warn!("Failed to create socket for loopback setup");
+            return;
+        }
+
+        let ifname = CString::new("lo").unwrap();
+        let mut ifr: libc::ifreq = mem::zeroed();
+        libc::strncpy(
+            ifr.ifr_name.as_mut_ptr(),
+            ifname.as_ptr(),
+            libc::IFNAMSIZ - 1,
+        );
+
+        // Get current flags
+        if libc::ioctl(sock, libc::SIOCGIFFLAGS as _, &mut ifr) < 0 {
+            tracing::warn!("Failed to get loopback flags: {}", std::io::Error::last_os_error());
+            libc::close(sock);
+            return;
+        }
+
+        // Set IFF_UP
+        ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as i16;
+        if libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) < 0 {
+            tracing::warn!("Failed to bring up loopback: {}", std::io::Error::last_os_error());
+        } else {
+            tracing::info!("Loopback interface (lo) is up");
+        }
+
+        libc::close(sock);
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
@@ -15,6 +56,9 @@ async fn main() -> std::io::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    #[cfg(target_os = "linux")]
+    bring_up_loopback();
 
     let args: Vec<String> = std::env::args().collect();
     let mut port: u16 = 5000;
