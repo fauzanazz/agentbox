@@ -26,7 +26,7 @@ impl PortForwardEntry {
         PortForwardInfo {
             guest_port: self.guest_port,
             host_port: self.host_port,
-            local_address: format!("127.0.0.1:{}", self.host_port),
+            local_address: format!("0.0.0.0:{}", self.host_port),
         }
     }
 
@@ -48,7 +48,7 @@ pub async fn start_forward(
     vsock_port: u32,
     guest_port: u16,
 ) -> Result<PortForwardEntry, AgentBoxError> {
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let listener = TcpListener::bind("0.0.0.0:0")
         .await
         .map_err(|e| AgentBoxError::PortForward(format!("Failed to bind TCP listener: {e}")))?;
 

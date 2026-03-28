@@ -26,3 +26,8 @@ export interface ExecStreamEvent {
     code?: number;
     message?: string;
 }
+export interface PortForwardInfo {
+    guest_port: number;
+    host_port: number;
+    local_address: string;
+}

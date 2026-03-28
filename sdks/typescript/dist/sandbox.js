@@ -119,6 +119,21 @@ export class Sandbox {
             path,
         }));
     }
+    /** Forward a guest port to a host port. Returns the allocated host address. */
+    async portForward(guestPort) {
+        return (await this.client.post(`/sandboxes/${this.id}/ports`, {
+            guest_port: guestPort,
+        }));
+    }
+    /** List active port forwards for this sandbox. */
+    async listPortForwards() {
+        const data = (await this.client.get(`/sandboxes/${this.id}/ports`));
+        return data.ports;
+    }
+    /** Remove a port forward by guest port. */
+    async removePortForward(guestPort) {
+        await this.client.delete(`/sandboxes/${this.id}/ports/${guestPort}`);
+    }
     /** Get sandbox info. */
     async info() {
         return (await this.client.get(`/sandboxes/${this.id}`));

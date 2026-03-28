@@ -1,4 +1,4 @@
-import type { ExecResult, ExecStreamEvent, FileEntry, SandboxConfig, SandboxInfo } from "./types.js";
+import type { ExecResult, ExecStreamEvent, FileEntry, PortForwardInfo, SandboxConfig, SandboxInfo } from "./types.js";
 /** A sandboxed environment for executing code. */
 export declare class Sandbox {
     readonly id: string;
@@ -18,6 +18,12 @@ export declare class Sandbox {
     download(remotePath: string): Promise<Uint8Array>;
     /** List files in the sandbox. */
     listFiles(path?: string): Promise<FileEntry[]>;
+    /** Forward a guest port to a host port. Returns the allocated host address. */
+    portForward(guestPort: number): Promise<PortForwardInfo>;
+    /** List active port forwards for this sandbox. */
+    listPortForwards(): Promise<PortForwardInfo[]>;
+    /** Remove a port forward by guest port. */
+    removePortForward(guestPort: number): Promise<void>;
     /** Get sandbox info. */
     info(): Promise<SandboxInfo>;
     /** Destroy the sandbox and its VM. */
