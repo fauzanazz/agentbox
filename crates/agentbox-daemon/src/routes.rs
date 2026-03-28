@@ -15,6 +15,9 @@ use crate::state::AppState;
 use crate::ws;
 
 /// Bearer token auth middleware. Rejects requests without a valid API key.
+/// Checks `Authorization: Bearer <token>` header first, then falls back to
+/// `?token=<token>` query parameter (needed for WebSocket connections where
+/// custom headers are not supported by browser/Node WebSocket APIs).
 async fn require_api_key(
     state: axum::extract::State<Arc<AppState>>,
     req: Request,
@@ -33,19 +36,25 @@ async fn require_api_key(
             .into_response()
     };
 
-    let header = match req.headers().get("authorization") {
-        Some(v) => v,
-        None => return unauthorized(),
-    };
+    // Check Authorization: Bearer header
+    if let Some(header) = req.headers().get("authorization") {
+        if let Ok(value) = header.to_str() {
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                if token == expected {
+                    return next.run(req).await;
+                }
+            }
+        }
+    }
 
-    let value = match header.to_str() {
-        Ok(v) => v,
-        Err(_) => return unauthorized(),
-    };
-
-    if let Some(token) = value.strip_prefix("Bearer ") {
-        if token == expected {
-            return next.run(req).await;
+    // Fallback: check ?token= query parameter (for WebSocket connections)
+    if let Some(query) = req.uri().query() {
+        for pair in query.split('&') {
+            if let Some(token) = pair.strip_prefix("token=") {
+                if token == expected {
+                    return next.run(req).await;
+                }
+            }
         }
     }
 
