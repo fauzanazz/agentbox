@@ -43,14 +43,12 @@ Self-hosted sandbox infrastructure for AI agents. Boot isolated Firecracker micr
 curl -fsSL https://raw.githubusercontent.com/fauzanazz/agentbox/main/scripts/install.sh | sh
 ```
 
-This detects your architecture, downloads pre-built binaries and VM artifacts, and installs Firecracker.
+This downloads pre-built binaries and VM artifacts, bakes a snapshot, and starts the daemon via systemd.
 
-### Start the daemon
+**Build from source** (if no release for your platform):
 
 ```bash
-agentbox serve
-# or with custom config:
-agentbox serve --config /path/to/config.toml --listen 0.0.0.0:8080
+curl -fsSL https://raw.githubusercontent.com/fauzanazz/agentbox/main/scripts/setup.sh | sh
 ```
 
 ### Python SDK
@@ -174,8 +172,8 @@ rootfs_path = "/var/lib/agentbox/rootfs.ext4"
 snapshot_path = "/var/lib/agentbox/snapshot"
 
 [vm.defaults]
-memory_mb = 2048
-vcpus = 2
+memory_mb = 512
+vcpus = 1
 network = false
 timeout_secs = 3600
 
@@ -197,7 +195,7 @@ sdks/
 ├── python/             # Python SDK (httpx + pydantic + websockets)
 └── typescript/         # TypeScript SDK (zero deps, native fetch)
 artifacts/              # VM artifact build scripts (kernel, rootfs, snapshot)
-scripts/                # Install script
+scripts/                # Install + setup scripts, systemd service
 ```
 
 ## Development
