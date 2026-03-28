@@ -62,6 +62,9 @@ sudo mkdir -p "${MOUNT_DIR}/etc/apk"
 echo "${MIRROR}/main" | sudo tee "${MOUNT_DIR}/etc/apk/repositories"
 echo "${MIRROR}/community" | sudo tee -a "${MOUNT_DIR}/etc/apk/repositories"
 
+# Copy host DNS config into chroot (needed for apk in CI/containers)
+sudo cp /etc/resolv.conf "${MOUNT_DIR}/etc/resolv.conf" 2>/dev/null || true
+
 # Install packages (retry on transient CDN errors)
 for attempt in 1 2 3; do
     if sudo chroot "$MOUNT_DIR" apk update --allow-untrusted 2>&1; then
