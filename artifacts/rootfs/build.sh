@@ -62,9 +62,15 @@ sudo mkdir -p "${MOUNT_DIR}/etc/apk"
 echo "${MIRROR}/main" | sudo tee "${MOUNT_DIR}/etc/apk/repositories"
 echo "${MIRROR}/community" | sudo tee -a "${MOUNT_DIR}/etc/apk/repositories"
 
-# Install packages
-sudo chroot "$MOUNT_DIR" apk update --allow-untrusted
-sudo chroot "$MOUNT_DIR" apk add --allow-untrusted \
+# Install packages (retry on transient CDN errors)
+for attempt in 1 2 3; do
+    if sudo chroot "$MOUNT_DIR" apk update --allow-untrusted 2>&1; then
+        break
+    fi
+    echo "apk update attempt $attempt failed, retrying in 5s..."
+    sleep 5
+done
+sudo chroot "$MOUNT_DIR" apk add --allow-untrusted --no-cache \
     python3 py3-pip nodejs npm \
     git ripgrep jq curl wget \
     build-base gcc musl-dev \
