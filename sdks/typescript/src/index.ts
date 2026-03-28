@@ -3,6 +3,7 @@ export type {
   ExecResult,
   ExecStreamEvent,
   FileEntry,
+  PortForwardInfo,
   SandboxConfig,
   SandboxInfo,
 } from "./types.js";

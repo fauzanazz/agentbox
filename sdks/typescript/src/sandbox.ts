@@ -4,6 +4,7 @@ import type {
   ExecResult,
   ExecStreamEvent,
   FileEntry,
+  PortForwardInfo,
   SandboxConfig,
   SandboxInfo,
 } from "./types.js";
@@ -136,6 +137,26 @@ export class Sandbox {
       list: "true",
       path,
     })) as FileEntry[];
+  }
+
+  /** Forward a guest port to a host port. Returns the allocated host address. */
+  async portForward(guestPort: number): Promise<PortForwardInfo> {
+    return (await this.client.post(`/sandboxes/${this.id}/ports`, {
+      guest_port: guestPort,
+    })) as PortForwardInfo;
+  }
+
+  /** List active port forwards for this sandbox. */
+  async listPortForwards(): Promise<PortForwardInfo[]> {
+    const data = (await this.client.get(
+      `/sandboxes/${this.id}/ports`,
+    )) as { ports: PortForwardInfo[] };
+    return data.ports;
+  }
+
+  /** Remove a port forward by guest port. */
+  async removePortForward(guestPort: number): Promise<void> {
+    await this.client.delete(`/sandboxes/${this.id}/ports/${guestPort}`);
   }
 
   /** Get sandbox info. */
