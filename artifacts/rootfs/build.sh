@@ -84,7 +84,8 @@ sudo cp "$GUEST_AGENT" "${MOUNT_DIR}/usr/local/bin/guest-agent"
 sudo chmod +x "${MOUNT_DIR}/usr/local/bin/guest-agent"
 
 # Copy overlay files (init scripts, etc.)
-sudo cp -r overlay/* "${MOUNT_DIR}/"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+sudo cp -r "${SCRIPT_DIR}/overlay/"* "${MOUNT_DIR}/"
 
 # Create workspace directory
 sudo mkdir -p "${MOUNT_DIR}/workspace"
