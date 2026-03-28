@@ -140,7 +140,7 @@ download_artifacts() {
     local url="https://github.com/${REPO}/releases/download/${VERSION}/agentbox-artifacts-${ARCH}.tar.gz"
     local tmp="$(mktemp -d)"
 
-    info "Downloading VM artifacts (kernel, rootfs, snapshot)..."
+    info "Downloading VM artifacts (kernel, rootfs)..."
     if curl -fsSL "$url" -o "${tmp}/artifacts.tar.gz" 2>/dev/null; then
         sudo tar -xzf "${tmp}/artifacts.tar.gz" -C "${DATA_DIR}"
         rm -rf "${tmp}"
@@ -150,6 +150,165 @@ download_artifacts() {
         warn "  cd artifacts && make all"
         rm -rf "${tmp}"
     fi
+}
+
+install_socat() {
+    if command -v socat > /dev/null 2>&1; then return; fi
+    info "Installing socat..."
+    if command -v apt-get > /dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq socat > /dev/null
+    elif command -v dnf > /dev/null 2>&1; then
+        sudo dnf install -y socat > /dev/null
+    elif command -v apk > /dev/null 2>&1; then
+        sudo apk add socat > /dev/null
+    else
+        warn "Could not install socat automatically. Please install it manually."
+    fi
+}
+
+bake_snapshot() {
+    if [ -f "${DATA_DIR}/snapshot/vmstate.bin" ]; then
+        info "Snapshot already exists"
+        return
+    fi
+
+    if [ ! -f "${DATA_DIR}/vmlinux" ] || [ ! -f "${DATA_DIR}/rootfs.ext4" ]; then
+        warn "Kernel or rootfs not found — cannot bake snapshot"
+        return
+    fi
+
+    need_cmd socat
+    need_cmd firecracker
+
+    info "Baking VM snapshot (this takes ~30s)..."
+
+    local work_dir="$(mktemp -d)"
+    cp "${DATA_DIR}/rootfs.ext4" "${work_dir}/rootfs.ext4"
+
+    cd "$work_dir"
+    firecracker --api-sock api.sock &
+    local fc_pid=$!
+    sleep 2
+
+    local vmlinux="$(realpath "${DATA_DIR}/vmlinux")"
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/boot-source" \
+        -H "Content-Type: application/json" \
+        -d "{\"kernel_image_path\": \"${vmlinux}\", \"boot_args\": \"console=ttyS0 reboot=k panic=1 pci=off\"}" > /dev/null
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/drives/rootfs" \
+        -H "Content-Type: application/json" \
+        -d '{"drive_id": "rootfs", "path_on_host": "rootfs.ext4", "is_root_device": true, "is_read_only": false}' > /dev/null
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/vsock" \
+        -H "Content-Type: application/json" \
+        -d '{"guest_cid": 3, "uds_path": "vsock.sock"}' > /dev/null
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/machine-config" \
+        -H "Content-Type: application/json" \
+        -d '{"vcpu_count": 1, "mem_size_mib": 512}' > /dev/null
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/actions" \
+        -H "Content-Type: application/json" \
+        -d '{"action_type": "InstanceStart"}' > /dev/null
+
+    # Wait for guest agent via Firecracker CONNECT handshake
+    local ready=false
+    for i in $(seq 1 60); do
+        if echo -e "CONNECT 5000\n" | timeout 3 socat - "UNIX-CONNECT:vsock.sock" 2>/dev/null | grep -q "^OK"; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$ready" != "true" ]; then
+        kill "$fc_pid" 2>/dev/null || true
+        rm -rf "$work_dir"
+        error "Guest agent did not start. Snapshot bake failed."
+    fi
+
+    sudo mkdir -p "${DATA_DIR}/snapshot"
+
+    curl --unix-socket api.sock -sf -X PATCH "http://localhost/vm" \
+        -H "Content-Type: application/json" \
+        -d '{"state": "Paused"}' > /dev/null
+
+    curl --unix-socket api.sock -sf -X PUT "http://localhost/snapshot/create" \
+        -H "Content-Type: application/json" \
+        -d "{\"snapshot_type\": \"Full\", \"snapshot_path\": \"$(realpath "${DATA_DIR}/snapshot/vmstate.bin")\", \"mem_file_path\": \"$(realpath "${DATA_DIR}/snapshot/memory.bin")\"}" > /dev/null
+
+    kill "$fc_pid" 2>/dev/null || true
+    wait "$fc_pid" 2>/dev/null || true
+    rm -rf "$work_dir"
+
+    info "Snapshot baked successfully"
+}
+
+setup_config() {
+    if [ -f "${DATA_DIR}/config.toml" ]; then
+        return
+    fi
+    sudo tee "${DATA_DIR}/config.toml" > /dev/null <<'CONFIG'
+[daemon]
+listen = "0.0.0.0:8080"
+log_level = "info"
+
+[vm]
+firecracker_bin = "/usr/local/bin/firecracker"
+kernel_path = "/var/lib/agentbox/vmlinux"
+rootfs_path = "/var/lib/agentbox/rootfs.ext4"
+snapshot_path = "/var/lib/agentbox/snapshot"
+
+[vm.defaults]
+memory_mb = 512
+vcpus = 1
+network = false
+timeout_secs = 3600
+
+[pool]
+min_size = 2
+max_size = 10
+idle_timeout_secs = 3600
+
+[guest]
+vsock_port = 5000
+ping_timeout_ms = 15000
+CONFIG
+    info "Config written to ${DATA_DIR}/config.toml"
+}
+
+setup_systemd() {
+    if ! command -v systemctl > /dev/null 2>&1; then
+        return
+    fi
+
+    if [ -f /etc/systemd/system/agentbox.service ]; then
+        return
+    fi
+
+    info "Installing systemd service..."
+    sudo tee /etc/systemd/system/agentbox.service > /dev/null <<'SERVICE'
+[Unit]
+Description=AgentBox Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agentbox-daemon /var/lib/agentbox/config.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable agentbox.service
+    sudo systemctl start agentbox.service
+    info "AgentBox service started"
 }
 
 # ── Main ───────────────────────────────────────────────────────
@@ -170,12 +329,20 @@ main() {
     download_firecracker
     setup_data_dir
     download_artifacts
+    install_socat
+    bake_snapshot
+    setup_config
+    setup_systemd
 
     printf "\n"
     info "AgentBox ${VERSION} installed successfully!"
     printf "\n"
-    printf "  Start the daemon:\n"
-    printf "    agentbox serve\n"
+    printf "  Service management:\n"
+    printf "    sudo systemctl status agentbox   # Check status\n"
+    printf "    sudo systemctl restart agentbox  # Restart\n"
+    printf "    sudo journalctl -u agentbox -f   # View logs\n"
+    printf "\n"
+    printf "  Config: ${DATA_DIR}/config.toml\n"
     printf "\n"
     printf "  Install the Python SDK:\n"
     printf "    pip install agentbox\n"
