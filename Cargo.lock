@@ -45,6 +45,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tokio",
