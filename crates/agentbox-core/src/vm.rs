@@ -329,6 +329,21 @@ async fn resize_rootfs(path: &std::path::Path, size_mb: u32) -> Result<()> {
         .map_err(|e| AgentBoxError::VmCreation(format!("rootfs truncate failed: {e}")))?;
     drop(file);
 
+    // Force fsck before resize (resize2fs requires clean filesystem)
+    let output = tokio::process::Command::new("e2fsck")
+        .args(["-f", "-y"])
+        .arg(path)
+        .output()
+        .await
+        .map_err(|e| AgentBoxError::VmCreation(format!("e2fsck exec failed: {e}")))?;
+    // e2fsck returns 1 if it fixed errors, which is fine
+    if !output.status.success() && output.status.code() != Some(1) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AgentBoxError::VmCreation(format!(
+            "e2fsck failed: {stderr}"
+        )));
+    }
+
     // Resize the ext4 filesystem to fill the new space
     let output = tokio::process::Command::new("resize2fs")
         .arg(path)
