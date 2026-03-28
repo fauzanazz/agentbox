@@ -83,17 +83,12 @@ async fn run_vsock(port: u16) -> std::io::Result<()> {
     // AF_VSOCK = 40, VMADDR_CID_ANY = u32::MAX
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::io::FromRawFd;
+        use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+        use tokio::io::unix::AsyncFd;
 
         const AF_VSOCK: libc::c_int = 40;
         const VMADDR_CID_ANY: u32 = u32::MAX;
 
-        let fd = unsafe { libc::socket(AF_VSOCK, libc::SOCK_STREAM, 0) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        // sockaddr_vm layout: family (2 bytes), reserved (2 bytes), port (4 bytes), cid (4 bytes)
         #[repr(C)]
         struct SockaddrVm {
             svm_family: u16,
@@ -101,6 +96,11 @@ async fn run_vsock(port: u16) -> std::io::Result<()> {
             svm_port: u32,
             svm_cid: u32,
             svm_zero: [u8; 4],
+        }
+
+        let fd = unsafe { libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
         }
 
         let addr = SockaddrVm {
@@ -129,14 +129,20 @@ async fn run_vsock(port: u16) -> std::io::Result<()> {
             return Err(std::io::Error::last_os_error());
         }
 
-        // Set non-blocking for tokio
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        /// Wrapper to make a raw fd usable with tokio's AsyncFd.
+        struct VsockListener(RawFd);
+        impl AsRawFd for VsockListener {
+            fn as_raw_fd(&self) -> RawFd {
+                self.0
+            }
+        }
+        impl Drop for VsockListener {
+            fn drop(&mut self) {
+                unsafe { libc::close(self.0) };
+            }
         }
 
-        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
-        let listener = TcpListener::from_std(std_listener)?;
+        let listener = AsyncFd::new(VsockListener(fd))?;
         tracing::info!("Guest agent listening on vsock port {port}");
 
         let shutdown = tokio::signal::ctrl_c();
@@ -144,14 +150,35 @@ async fn run_vsock(port: u16) -> std::io::Result<()> {
 
         loop {
             tokio::select! {
-                result = listener.accept() => {
-                    match result {
-                        Ok((stream, _)) => {
-                            tracing::debug!("Accepted vsock connection");
+                guard = listener.readable() => {
+                    let mut guard = guard?;
+                    let conn_fd = unsafe {
+                        libc::accept4(
+                            fd,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            libc::SOCK_NONBLOCK,
+                        )
+                    };
+                    if conn_fd < 0 {
+                        let err = std::io::Error::last_os_error();
+                        if err.kind() == std::io::ErrorKind::WouldBlock {
+                            guard.clear_ready();
+                            continue;
+                        }
+                        tracing::error!("Accept error: {err}");
+                        continue;
+                    }
+                    guard.clear_ready();
+                    tracing::debug!("Accepted vsock connection (fd={conn_fd})");
+                    // Wrap accepted vsock fd as a UnixStream for async I/O
+                    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(conn_fd) };
+                    match tokio::net::UnixStream::from_std(std_stream) {
+                        Ok(stream) => {
                             tokio::spawn(server::handle_connection(stream));
                         }
                         Err(e) => {
-                            tracing::error!("Accept error: {e}");
+                            tracing::error!("Failed to wrap vsock stream: {e}");
                         }
                     }
                 }
