@@ -241,6 +241,42 @@ cd sdks/python && pip install -e ".[dev]" && pytest
 - Linux with KVM (`/dev/kvm`) — Firecracker does not support macOS/Windows natively
 - x86_64 or aarch64 architecture
 
+## Supported Environments
+
+AgentBox uses Firecracker microVMs which require Linux with KVM. The kernel and environment requirements differ between bare-metal and nested virtualization.
+
+### Bare-metal (recommended)
+
+Any Linux host with KVM support. Works with the default kernel 4.14 config or newer kernels (5.10, 6.1).
+
+Known working:
+- AWS bare-metal instances (`.metal`)
+- Dedicated servers (Hetzner, OVH, etc.)
+- Local Linux machines with KVM enabled
+
+### Nested virtualization (cloud VMs)
+
+Most cloud VMs run inside a hypervisor, creating a nested KVM environment. Kernels 5.10+ fail with `-EINVAL` on virtio device probe due to strict DMA/IOMMU feature negotiation that doesn't work under nested KVM.
+
+**AgentBox ships kernel 4.14.336 by default**, which works in both bare-metal and nested environments.
+
+Known working:
+- DigitalOcean droplets (with KVM enabled)
+- AWS non-bare-metal EC2 instances (with nested virtualization enabled)
+- GCP instances with nested virtualization
+
+If you see errors like `virtio_blk: probe of virtio0 failed with error -22` or `vmw_vsock_virtio_transport: probe of virtio1 failed with error -22`, you're hitting the nested virt kernel issue. Ensure you're using the shipped 4.14 kernel, not a custom 5.10+ build.
+
+### Building artifacts from source
+
+If pre-built artifacts aren't available for your architecture, build them locally:
+
+```bash
+cd artifacts && make all    # Requires: Linux with KVM, build-essential, curl, socat
+```
+
+This builds the kernel (~10 min), rootfs, and snapshot. The rootfs build auto-downloads `apk-tools-static` if the Alpine package manager isn't available on your host.
+
 ## License
 
 [Apache-2.0](LICENSE)
