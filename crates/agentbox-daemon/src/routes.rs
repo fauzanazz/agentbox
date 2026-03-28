@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use axum::extract::Request;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Json;
 use axum::Router;
 use percent_encoding::percent_decode_str;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
@@ -109,9 +109,49 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         })
         .on_response(DefaultOnResponse::new());
 
-    protected
-        .merge(public)
-        .layer(CorsLayer::permissive())
-        .layer(trace_layer)
-        .with_state(state)
+    // CORS — configurable origins, defaults to same-origin only
+    let cors_layer = build_cors_layer(&state.config.cors);
+
+    let mut router = protected.merge(public).layer(cors_layer).layer(trace_layer);
+
+    // Rate limiting — disabled when requests_per_second = 0
+    if state.config.rate_limit.requests_per_second > 0 {
+        let governor_conf = Arc::new(
+            tower_governor::governor::GovernorConfigBuilder::default()
+                .per_second(state.config.rate_limit.requests_per_second)
+                .burst_size(state.config.rate_limit.burst_size)
+                .finish()
+                .expect("valid rate limit config"),
+        );
+        router = router.layer(tower_governor::GovernorLayer {
+            config: governor_conf,
+        });
+    }
+
+    router.with_state(state)
+}
+
+fn build_cors_layer(config: &agentbox_core::config::CorsConfig) -> CorsLayer {
+    if config.allowed_origins.iter().any(|o| o == "*") {
+        return CorsLayer::permissive();
+    }
+
+    if config.allowed_origins.is_empty() {
+        // Same-origin only: no Access-Control-Allow-Origin header sent,
+        // which means browsers block cross-origin requests.
+        return CorsLayer::new()
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+            .allow_headers(tower_http::cors::Any);
+    }
+
+    let origins: Vec<HeaderValue> = config
+        .allowed_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers(tower_http::cors::Any)
 }

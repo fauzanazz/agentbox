@@ -8,6 +8,9 @@ pub struct AgentBoxConfig {
     pub vm: VmConfig,
     pub pool: PoolConfig,
     pub guest: GuestConfig,
+    pub tls: TlsConfig,
+    pub cors: CorsConfig,
+    pub rate_limit: RateLimitConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -52,6 +55,46 @@ pub struct PoolConfig {
 pub struct GuestConfig {
     pub vsock_port: u32,
     pub ping_timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct TlsConfig {
+    pub cert_path: Option<PathBuf>,
+    pub key_path: Option<PathBuf>,
+}
+
+impl TlsConfig {
+    /// Returns true if both cert and key paths are configured.
+    pub fn is_configured(&self) -> bool {
+        self.cert_path.is_some() && self.key_path.is_some()
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct CorsConfig {
+    /// List of allowed origins. Use `["*"]` for permissive (development only).
+    /// Default is empty, which means same-origin only.
+    pub allowed_origins: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    /// Max requests per second per IP address. 0 = disabled.
+    pub requests_per_second: u64,
+    /// Burst size (max tokens in bucket).
+    pub burst_size: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_second: 0,
+            burst_size: 100,
+        }
+    }
 }
 
 impl Default for DaemonConfig {
@@ -228,5 +271,102 @@ mod tests {
         write!(f, "[pool]\nmin_size = \"not_a_number\"\n").unwrap();
         let result = AgentBoxConfig::from_file(f.path());
         assert!(matches!(result, Err(AgentBoxError::Config(_))));
+    }
+
+    // ── TLS config ────────────────────────────────────────────────
+
+    #[test]
+    fn tls_default_is_unconfigured() {
+        let tls = TlsConfig::default();
+        assert!(!tls.is_configured());
+        assert!(tls.cert_path.is_none());
+        assert!(tls.key_path.is_none());
+    }
+
+    #[test]
+    fn tls_is_configured_requires_both_paths() {
+        let partial = TlsConfig {
+            cert_path: Some(PathBuf::from("/etc/cert.pem")),
+            key_path: None,
+        };
+        assert!(!partial.is_configured());
+
+        let full = TlsConfig {
+            cert_path: Some(PathBuf::from("/etc/cert.pem")),
+            key_path: Some(PathBuf::from("/etc/key.pem")),
+        };
+        assert!(full.is_configured());
+    }
+
+    #[test]
+    fn from_file_tls_section_parsed() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            "[tls]\ncert_path = \"/etc/cert.pem\"\nkey_path = \"/etc/key.pem\"\n"
+        )
+        .unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert!(cfg.tls.is_configured());
+        assert_eq!(cfg.tls.cert_path.unwrap(), PathBuf::from("/etc/cert.pem"));
+    }
+
+    #[test]
+    fn from_file_without_tls_uses_defaults() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[daemon]\nlisten = \"0.0.0.0:9090\"\n").unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert!(!cfg.tls.is_configured());
+    }
+
+    // ── CORS config ───────────────────────────────────────────────
+
+    #[test]
+    fn cors_default_is_empty() {
+        let cors = CorsConfig::default();
+        assert!(cors.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn from_file_cors_section_parsed() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            "[cors]\nallowed_origins = [\"https://example.com\", \"https://app.example.com\"]\n"
+        )
+        .unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.cors.allowed_origins.len(), 2);
+        assert_eq!(cfg.cors.allowed_origins[0], "https://example.com");
+    }
+
+    #[test]
+    fn from_file_cors_wildcard() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[cors]\nallowed_origins = [\"*\"]\n").unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.cors.allowed_origins, vec!["*"]);
+    }
+
+    // ── Rate limit config ─────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_default_is_disabled() {
+        let rl = RateLimitConfig::default();
+        assert_eq!(rl.requests_per_second, 0);
+        assert_eq!(rl.burst_size, 100);
+    }
+
+    #[test]
+    fn from_file_rate_limit_section_parsed() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            "[rate_limit]\nrequests_per_second = 50\nburst_size = 200\n"
+        )
+        .unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.rate_limit.requests_per_second, 50);
+        assert_eq!(cfg.rate_limit.burst_size, 200);
     }
 }

@@ -24,3 +24,17 @@ network_min_size = 0
 [guest]
 vsock_port = 5000
 ping_timeout_ms = 5000
+
+# Optional TLS — omit or leave empty for plain HTTP
+# [tls]
+# cert_path = "/etc/agentbox/cert.pem"
+# key_path = "/etc/agentbox/key.pem"
+
+# CORS — empty list means same-origin only; ["*"] for permissive (dev only)
+# [cors]
+# allowed_origins = ["https://your-app.example.com"]
+
+# Rate limiting — 0 = disabled
+# [rate_limit]
+# requests_per_second = 50
+# burst_size = 100
