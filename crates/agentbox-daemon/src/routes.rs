@@ -12,6 +12,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
+use crate::metrics;
 use crate::state::AppState;
 use crate::ws;
 
@@ -65,7 +66,10 @@ async fn require_api_key(
     unauthorized()
 }
 
-pub fn build_router(state: Arc<AppState>) -> Router {
+pub fn build_router(
+    state: Arc<AppState>,
+    prometheus_handle: metrics_exporter_prometheus::PrometheusHandle,
+) -> Router {
     // Protected routes — require API key
     let protected = Router::new()
         .route("/sandboxes", post(handlers::create_sandbox))
@@ -96,7 +100,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ));
 
     // Public routes — no auth required
-    let public = Router::new().route("/health", get(handlers::health_check));
+    let metrics_state = state.clone();
+    let public = Router::new()
+        .route("/health", get(handlers::health_check))
+        .route(
+            "/metrics",
+            get(move || async move {
+                metrics::record_pool_gauges(&metrics_state);
+                prometheus_handle.render()
+            }),
+        );
 
     // Use path-only spans to avoid leaking query params (e.g., ?token=) in logs
     let trace_layer = TraceLayer::new_for_http()
@@ -112,7 +125,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // CORS — configurable origins, defaults to same-origin only
     let cors_layer = build_cors_layer(&state.config.cors);
 
-    let mut router = protected.merge(public).layer(cors_layer).layer(trace_layer);
+    let mut router = protected
+        .merge(public)
+        .layer(middleware::from_fn(metrics::track_metrics))
+        .layer(cors_layer)
+        .layer(trace_layer);
 
     // Rate limiting — disabled when requests_per_second = 0
     if state.config.rate_limit.requests_per_second > 0 {

@@ -1,3 +1,4 @@
+use agentbox_core::config::LogFormat;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -31,7 +32,17 @@ async fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.daemon.log_level));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    match config.daemon.log_format {
+        LogFormat::Json => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .init();
+        }
+        LogFormat::Text => {
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        }
+    }
 
     if let Some(warning) = config_warning {
         tracing::warn!("{warning}");

@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use agentbox_core::config::AgentBoxConfig;
 
 pub mod handlers;
+pub mod metrics;
 pub mod port_forward;
 pub mod routes;
 pub mod state;
@@ -24,9 +26,11 @@ pub async fn run_daemon(
     let _pool_handle = pool.start().await?;
 
     let tls_config = config.tls.clone();
+    let shutdown_timeout = Duration::from_secs(config.daemon.shutdown_timeout_secs);
+    let prometheus_handle = metrics::install_recorder();
     let state = Arc::new(state::AppState::new(pool.clone(), Arc::new(config)));
 
-    let app = routes::build_router(state);
+    let app = routes::build_router(state, prometheus_handle);
 
     if tls_config.is_configured() {
         let cert_path = tls_config.cert_path.as_ref().unwrap();
@@ -61,8 +65,15 @@ pub async fn run_daemon(
         .await?;
     }
 
-    tracing::info!("Shutting down...");
-    pool.shutdown().await?;
+    tracing::info!(
+        "Shutting down (timeout: {}s)...",
+        shutdown_timeout.as_secs()
+    );
+    match tokio::time::timeout(shutdown_timeout, pool.shutdown()).await {
+        Ok(Ok(())) => tracing::info!("Shutdown complete"),
+        Ok(Err(e)) => tracing::error!("Shutdown error: {e}"),
+        Err(_) => tracing::warn!("Shutdown timed out, forcing exit"),
+    }
     Ok(())
 }
 

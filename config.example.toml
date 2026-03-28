@@ -1,6 +1,8 @@
 [daemon]
 listen = "127.0.0.1:8080"
 log_level = "info"
+# log_format = "text"  # "text" (default, human-readable) or "json" (structured, for production)
+# shutdown_timeout_secs = 30
 
 [vm]
 firecracker_bin = "/usr/local/bin/firecracker"

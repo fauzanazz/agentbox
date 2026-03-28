@@ -18,7 +18,17 @@ pub struct AgentBoxConfig {
 pub struct DaemonConfig {
     pub listen: String,
     pub log_level: String,
+    pub log_format: LogFormat,
     pub api_key: Option<String>,
+    pub shutdown_timeout_secs: u64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -102,7 +112,9 @@ impl Default for DaemonConfig {
         Self {
             listen: "127.0.0.1:8080".to_string(),
             log_level: "info".to_string(),
+            log_format: LogFormat::Text,
             api_key: None,
+            shutdown_timeout_secs: 30,
         }
     }
 }
@@ -171,6 +183,8 @@ mod tests {
         let d = DaemonConfig::default();
         assert_eq!(d.listen, "127.0.0.1:8080");
         assert_eq!(d.log_level, "info");
+        assert_eq!(d.log_format, LogFormat::Text);
+        assert_eq!(d.shutdown_timeout_secs, 30);
     }
 
     #[test]
@@ -368,5 +382,37 @@ mod tests {
         let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
         assert_eq!(cfg.rate_limit.requests_per_second, 50);
         assert_eq!(cfg.rate_limit.burst_size, 200);
+    }
+
+    // ── Log format config ─────────────────────────────────────────
+
+    #[test]
+    fn log_format_default_is_text() {
+        let d = DaemonConfig::default();
+        assert_eq!(d.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn from_file_log_format_json() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[daemon]\nlog_format = \"json\"\n").unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.daemon.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn from_file_log_format_text_explicit() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[daemon]\nlog_format = \"text\"\n").unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.daemon.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn from_file_shutdown_timeout() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[daemon]\nshutdown_timeout_secs = 60\n").unwrap();
+        let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.daemon.shutdown_timeout_secs, 60);
     }
 }

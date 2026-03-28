@@ -451,7 +451,10 @@ mod tests {
             pool,
             Arc::new(AgentBoxConfig::default()),
         ));
-        crate::routes::build_router(state)
+        let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle();
+        crate::routes::build_router(state, prometheus_handle)
     }
 
     #[tokio::test]
@@ -721,7 +724,10 @@ mod tests {
             vm_manager,
         ));
         let state = Arc::new(crate::state::AppState::new(pool, Arc::new(config)));
-        crate::routes::build_router(state)
+        let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle();
+        crate::routes::build_router(state, prometheus_handle)
     }
 
     #[tokio::test]
