@@ -300,6 +300,7 @@ pub async fn handle_mkdir(id: u64, params: Option<Value>) -> Response {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::path_security::ENV_MUTEX;

@@ -63,6 +63,7 @@ mod tests {
     /// Spawn a one-shot HTTP server on a Unix socket that responds with the given
     /// status and body. Returns a channel that receives the captured request
     /// (method, uri, headers, body bytes) if `capture_tx` is provided.
+    #[allow(clippy::type_complexity)]
     async fn mock_fc_server(
         listener: UnixListener,
         status: StatusCode,
@@ -73,7 +74,6 @@ mod tests {
         let io = TokioIo::new(stream);
 
         let capture_tx = std::sync::Arc::new(tokio::sync::Mutex::new(capture_tx));
-        let status = status;
 
         Http1Builder::new()
             .serve_connection(

@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn io_variant_has_source() {
-        let e = AgentBoxError::Io(std::io::Error::new(std::io::ErrorKind::Other, "x"));
+        let e = AgentBoxError::Io(std::io::Error::other("x"));
         assert!(e.source().is_some());
     }
 
