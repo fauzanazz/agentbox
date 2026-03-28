@@ -11,12 +11,15 @@ export class Sandbox {
     /** Create a new sandbox. Boots a microVM in <300ms. */
     static async create(options) {
         const client = new AgentBoxClient(options?.url);
-        const data = (await client.post("/sandboxes", {
+        const body = {
             memory_mb: options?.memory_mb ?? 2048,
             vcpus: options?.vcpus ?? 2,
             network: options?.network ?? false,
             timeout: options?.timeout ?? 3600,
-        }));
+        };
+        if (options?.disk_size_mb)
+            body.disk_size_mb = options.disk_size_mb;
+        const data = (await client.post("/sandboxes", body));
         return new Sandbox(data.id, client);
     }
     /** Execute a command and wait for completion. */

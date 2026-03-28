@@ -22,6 +22,7 @@ export interface SandboxConfig {
   vcpus?: number;
   network?: boolean;
   timeout?: number;
+  disk_size_mb?: number;
 }
 
 export interface ExecStreamEvent {
