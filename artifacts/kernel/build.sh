@@ -38,6 +38,9 @@ if [ ! -f "$KCONFIG" ]; then
 fi
 cp "$KCONFIG" "${SRC_DIR}/.config"
 
+# Resolve dependencies for fragment config
+make -C "$SRC_DIR" ARCH="$KERNEL_ARCH" olddefconfig
+
 # Build
 make -C "$SRC_DIR" ARCH="$KERNEL_ARCH" -j"$(nproc)" vmlinux
 
