@@ -301,6 +301,20 @@ ExecStart=/usr/local/bin/agentbox-daemon /var/lib/agentbox/config.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
+TimeoutStopSec=45
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentbox /tmp
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+# Resource limits (adjust based on expected workload)
+MemoryMax=8G
+CPUQuota=400%
 
 [Install]
 WantedBy=multi-user.target

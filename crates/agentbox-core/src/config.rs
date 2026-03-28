@@ -166,10 +166,133 @@ impl Default for GuestConfig {
 impl AgentBoxConfig {
     pub fn from_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&content)
+        let mut config: Self = toml::from_str(&content)
             .map_err(|e| crate::error::AgentBoxError::Config(e.to_string()))?;
+        config.apply_env_overrides();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Apply AGENTBOX_* environment variable overrides on top of parsed config.
+    /// Naming: AGENTBOX_{SECTION}_{FIELD} in uppercase, e.g. AGENTBOX_DAEMON_LISTEN.
+    pub fn apply_env_overrides(&mut self) {
+        // Helper: read env var and apply if set
+        macro_rules! env_override {
+            ($var:expr, $field:expr, str) => {
+                if let Ok(val) = std::env::var($var) {
+                    $field = val;
+                }
+            };
+            ($var:expr, $field:expr, path) => {
+                if let Ok(val) = std::env::var($var) {
+                    $field = PathBuf::from(val);
+                }
+            };
+            ($var:expr, $field:expr, option_path) => {
+                if let Ok(val) = std::env::var($var) {
+                    $field = if val.is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(val))
+                    };
+                }
+            };
+            ($var:expr, $field:expr, $type:ty) => {
+                if let Ok(val) = std::env::var($var) {
+                    if let Ok(parsed) = val.parse::<$type>() {
+                        $field = parsed;
+                    }
+                }
+            };
+        }
+
+        // [daemon]
+        env_override!("AGENTBOX_DAEMON_LISTEN", self.daemon.listen, str);
+        env_override!("AGENTBOX_DAEMON_LOG_LEVEL", self.daemon.log_level, str);
+        env_override!(
+            "AGENTBOX_DAEMON_SHUTDOWN_TIMEOUT_SECS",
+            self.daemon.shutdown_timeout_secs,
+            u64
+        );
+        if let Ok(val) = std::env::var("AGENTBOX_DAEMON_LOG_FORMAT") {
+            match val.as_str() {
+                "json" => self.daemon.log_format = LogFormat::Json,
+                "text" => self.daemon.log_format = LogFormat::Text,
+                _ => {}
+            }
+        }
+        if let Ok(val) = std::env::var("AGENTBOX_DAEMON_API_KEY") {
+            self.daemon.api_key = if val.is_empty() { None } else { Some(val) };
+        }
+
+        // [vm]
+        env_override!("AGENTBOX_VM_FIRECRACKER_BIN", self.vm.firecracker_bin, path);
+        env_override!("AGENTBOX_VM_KERNEL_PATH", self.vm.kernel_path, path);
+        env_override!("AGENTBOX_VM_ROOTFS_PATH", self.vm.rootfs_path, path);
+        env_override!("AGENTBOX_VM_SNAPSHOT_PATH", self.vm.snapshot_path, path);
+
+        // [vm.defaults]
+        env_override!(
+            "AGENTBOX_VM_DEFAULTS_MEMORY_MB",
+            self.vm.defaults.memory_mb,
+            u32
+        );
+        env_override!("AGENTBOX_VM_DEFAULTS_VCPUS", self.vm.defaults.vcpus, u32);
+        env_override!(
+            "AGENTBOX_VM_DEFAULTS_DISK_SIZE_MB",
+            self.vm.defaults.disk_size_mb,
+            u32
+        );
+        env_override!(
+            "AGENTBOX_VM_DEFAULTS_TIMEOUT_SECS",
+            self.vm.defaults.timeout_secs,
+            u64
+        );
+        if let Ok(val) = std::env::var("AGENTBOX_VM_DEFAULTS_NETWORK") {
+            match val.as_str() {
+                "true" | "1" => self.vm.defaults.network = true,
+                "false" | "0" => self.vm.defaults.network = false,
+                _ => {}
+            }
+        }
+
+        // [pool]
+        env_override!("AGENTBOX_POOL_MIN_SIZE", self.pool.min_size, usize);
+        env_override!("AGENTBOX_POOL_MAX_SIZE", self.pool.max_size, usize);
+        env_override!(
+            "AGENTBOX_POOL_IDLE_TIMEOUT_SECS",
+            self.pool.idle_timeout_secs,
+            u64
+        );
+        env_override!(
+            "AGENTBOX_POOL_NETWORK_MIN_SIZE",
+            self.pool.network_min_size,
+            usize
+        );
+
+        // [guest]
+        env_override!("AGENTBOX_GUEST_VSOCK_PORT", self.guest.vsock_port, u32);
+        env_override!(
+            "AGENTBOX_GUEST_PING_TIMEOUT_MS",
+            self.guest.ping_timeout_ms,
+            u64
+        );
+
+        // [tls]
+        env_override!("AGENTBOX_TLS_CERT_PATH", self.tls.cert_path, option_path);
+        env_override!("AGENTBOX_TLS_KEY_PATH", self.tls.key_path, option_path);
+
+        // [rate_limit]
+        env_override!(
+            "AGENTBOX_RATE_LIMIT_REQUESTS_PER_SECOND",
+            self.rate_limit.requests_per_second,
+            u64
+        );
+        env_override!(
+            "AGENTBOX_RATE_LIMIT_BURST_SIZE",
+            self.rate_limit.burst_size,
+            u32
+        );
     }
 
     /// Validate config values and cross-field constraints.
@@ -563,5 +686,62 @@ mod tests {
         write!(f, "[pool]\nmax_size = 0\n").unwrap();
         let result = AgentBoxConfig::from_file(f.path());
         assert!(matches!(result, Err(AgentBoxError::Config(_))));
+    }
+
+    // ── Env var overrides ─────────────────────────────────────────
+
+    #[test]
+    fn env_override_daemon_listen() {
+        let mut cfg = AgentBoxConfig::default();
+        std::env::set_var("AGENTBOX_DAEMON_LISTEN", "0.0.0.0:9999");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_DAEMON_LISTEN");
+        assert_eq!(cfg.daemon.listen, "0.0.0.0:9999");
+    }
+
+    #[test]
+    fn env_override_pool_max_size() {
+        let mut cfg = AgentBoxConfig::default();
+        std::env::set_var("AGENTBOX_POOL_MAX_SIZE", "42");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_POOL_MAX_SIZE");
+        assert_eq!(cfg.pool.max_size, 42);
+    }
+
+    #[test]
+    fn env_override_log_format_json() {
+        let mut cfg = AgentBoxConfig::default();
+        std::env::set_var("AGENTBOX_DAEMON_LOG_FORMAT", "json");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_DAEMON_LOG_FORMAT");
+        assert_eq!(cfg.daemon.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn env_override_api_key() {
+        let mut cfg = AgentBoxConfig::default();
+        std::env::set_var("AGENTBOX_DAEMON_API_KEY", "my-secret");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_DAEMON_API_KEY");
+        assert_eq!(cfg.daemon.api_key, Some("my-secret".to_string()));
+    }
+
+    #[test]
+    fn env_override_vm_network_bool() {
+        let mut cfg = AgentBoxConfig::default();
+        std::env::set_var("AGENTBOX_VM_DEFAULTS_NETWORK", "true");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_VM_DEFAULTS_NETWORK");
+        assert!(cfg.vm.defaults.network);
+    }
+
+    #[test]
+    fn env_override_invalid_number_ignored() {
+        let mut cfg = AgentBoxConfig::default();
+        let original = cfg.pool.max_size;
+        std::env::set_var("AGENTBOX_POOL_MAX_SIZE", "not_a_number");
+        cfg.apply_env_overrides();
+        std::env::remove_var("AGENTBOX_POOL_MAX_SIZE");
+        assert_eq!(cfg.pool.max_size, original);
     }
 }
