@@ -31,7 +31,10 @@ fn bring_up_loopback() {
 
         // Get current flags
         if libc::ioctl(sock, libc::SIOCGIFFLAGS as _, &mut ifr) < 0 {
-            tracing::warn!("Failed to get loopback flags: {}", std::io::Error::last_os_error());
+            tracing::warn!(
+                "Failed to get loopback flags: {}",
+                std::io::Error::last_os_error()
+            );
             libc::close(sock);
             return;
         }
@@ -39,7 +42,10 @@ fn bring_up_loopback() {
         // Set IFF_UP
         ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as i16;
         if libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) < 0 {
-            tracing::warn!("Failed to bring up loopback: {}", std::io::Error::last_os_error());
+            tracing::warn!(
+                "Failed to bring up loopback: {}",
+                std::io::Error::last_os_error()
+            );
         } else {
             tracing::info!("Loopback interface (lo) is up");
         }

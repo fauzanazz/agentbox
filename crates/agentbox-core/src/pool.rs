@@ -151,7 +151,10 @@ impl Pool {
                 return Err(AgentBoxError::PoolExhausted);
             }
 
-            tracing::info!(network = config.network, "Pool miss, creating sandbox on demand");
+            tracing::info!(
+                network = config.network,
+                "Pool miss, creating sandbox on demand"
+            );
             let vm = self.vm_manager.create_from_snapshot(&config).await?;
             let sb = Sandbox::new(vm, config.clone(), &self.guest_config);
 
