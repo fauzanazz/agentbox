@@ -166,7 +166,58 @@ impl Default for GuestConfig {
 impl AgentBoxConfig {
     pub fn from_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        toml::from_str(&content).map_err(|e| crate::error::AgentBoxError::Config(e.to_string()))
+        let config: Self = toml::from_str(&content)
+            .map_err(|e| crate::error::AgentBoxError::Config(e.to_string()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate config values and cross-field constraints.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        let mut errors = Vec::new();
+
+        // Pool constraints
+        if self.pool.max_size == 0 {
+            errors.push("pool.max_size must be > 0".to_string());
+        }
+        if self.pool.min_size > self.pool.max_size {
+            errors.push(format!(
+                "pool.min_size ({}) must be <= pool.max_size ({})",
+                self.pool.min_size, self.pool.max_size
+            ));
+        }
+        if self.pool.network_min_size > self.pool.max_size {
+            errors.push(format!(
+                "pool.network_min_size ({}) must be <= pool.max_size ({})",
+                self.pool.network_min_size, self.pool.max_size
+            ));
+        }
+
+        // VM defaults
+        if self.vm.defaults.vcpus == 0 {
+            errors.push("vm.defaults.vcpus must be > 0".to_string());
+        }
+        if self.vm.defaults.memory_mb == 0 {
+            errors.push("vm.defaults.memory_mb must be > 0".to_string());
+        }
+
+        // TLS: both paths must be present together
+        if self.tls.cert_path.is_some() != self.tls.key_path.is_some() {
+            errors.push("tls: both cert_path and key_path must be specified together".to_string());
+        }
+
+        // Rate limit: burst_size must be > 0 when rate limiting is enabled
+        if self.rate_limit.requests_per_second > 0 && self.rate_limit.burst_size == 0 {
+            errors.push(
+                "rate_limit.burst_size must be > 0 when rate limiting is enabled".to_string(),
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::error::AgentBoxError::Config(errors.join("; ")))
+        }
     }
 }
 
@@ -414,5 +465,103 @@ mod tests {
         write!(f, "[daemon]\nshutdown_timeout_secs = 60\n").unwrap();
         let cfg = AgentBoxConfig::from_file(f.path()).unwrap();
         assert_eq!(cfg.daemon.shutdown_timeout_secs, 60);
+    }
+
+    // ── Validation ────────────────────────────────────────────────
+
+    #[test]
+    fn validate_defaults_pass() {
+        let cfg = AgentBoxConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_pool_max_size_zero() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.pool.max_size = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("pool.max_size must be > 0"));
+    }
+
+    #[test]
+    fn validate_pool_min_greater_than_max() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.pool.min_size = 20;
+        cfg.pool.max_size = 10;
+        let err = cfg.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("pool.min_size (20) must be <= pool.max_size (10)"));
+    }
+
+    #[test]
+    fn validate_network_min_greater_than_max() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.pool.network_min_size = 20;
+        cfg.pool.max_size = 10;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("pool.network_min_size"));
+    }
+
+    #[test]
+    fn validate_vcpus_zero() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.vm.defaults.vcpus = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("vm.defaults.vcpus must be > 0"));
+    }
+
+    #[test]
+    fn validate_memory_zero() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.vm.defaults.memory_mb = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("vm.defaults.memory_mb must be > 0"));
+    }
+
+    #[test]
+    fn validate_tls_partial_cert_only() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.tls.cert_path = Some(PathBuf::from("/etc/cert.pem"));
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("both cert_path and key_path"));
+    }
+
+    #[test]
+    fn validate_tls_partial_key_only() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.tls.key_path = Some(PathBuf::from("/etc/key.pem"));
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("both cert_path and key_path"));
+    }
+
+    #[test]
+    fn validate_rate_limit_burst_zero_when_enabled() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.rate_limit.requests_per_second = 50;
+        cfg.rate_limit.burst_size = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("burst_size must be > 0"));
+    }
+
+    #[test]
+    fn validate_multiple_errors_joined() {
+        let mut cfg = AgentBoxConfig::default();
+        cfg.pool.max_size = 0;
+        cfg.vm.defaults.vcpus = 0;
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pool.max_size"));
+        assert!(msg.contains("vcpus"));
+    }
+
+    #[test]
+    fn from_file_rejects_invalid_config() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "[pool]\nmax_size = 0\n").unwrap();
+        let result = AgentBoxConfig::from_file(f.path());
+        assert!(matches!(result, Err(AgentBoxError::Config(_))));
     }
 }

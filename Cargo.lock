@@ -46,6 +46,7 @@ dependencies = [
  "axum",
  "axum-server",
  "base64",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "percent-encoding",

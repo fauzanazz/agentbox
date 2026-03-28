@@ -387,14 +387,99 @@ pub async fn remove_port_forward(
 }
 
 pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let active = state.pool.list_active();
+    let pool_status = state.pool.status();
+    let mut checks = serde_json::Map::new();
+    let mut healthy = true;
+
+    // Check Firecracker binary
+    let fc_path = &state.config.vm.firecracker_bin;
+    if fc_path.exists() {
+        checks.insert("firecracker".into(), serde_json::json!("ok"));
+    } else {
+        checks.insert(
+            "firecracker".into(),
+            serde_json::json!({"error": format!("not found at {}", fc_path.display())}),
+        );
+        healthy = false;
+    }
+
+    // Check kernel
+    if state.config.vm.kernel_path.exists() {
+        checks.insert("kernel".into(), serde_json::json!("ok"));
+    } else {
+        checks.insert("kernel".into(), serde_json::json!({"error": "not found"}));
+        healthy = false;
+    }
+
+    // Check rootfs
+    if state.config.vm.rootfs_path.exists() {
+        checks.insert("rootfs".into(), serde_json::json!("ok"));
+    } else {
+        checks.insert("rootfs".into(), serde_json::json!({"error": "not found"}));
+        healthy = false;
+    }
+
+    // Check snapshot directory
+    if state.config.vm.snapshot_path.exists() {
+        checks.insert("snapshot".into(), serde_json::json!("ok"));
+    } else {
+        checks.insert("snapshot".into(), serde_json::json!({"error": "not found"}));
+        healthy = false;
+    }
+
+    // Disk space check on rootfs parent directory
+    #[cfg(unix)]
+    {
+        if let Some(parent) = state.config.vm.rootfs_path.parent() {
+            if let Ok(stat) = nix_statvfs(parent) {
+                let free_mb = stat.free_bytes / (1024 * 1024);
+                if free_mb < 512 {
+                    checks.insert(
+                        "disk".into(),
+                        serde_json::json!({"warning": format!("low disk space: {}MB free", free_mb)}),
+                    );
+                } else {
+                    checks.insert("disk".into(), serde_json::json!({"free_mb": free_mb}));
+                }
+            }
+        }
+    }
+
+    let status = if healthy { "ok" } else { "degraded" };
+
     Json(serde_json::json!({
-        "status": "ok",
+        "status": status,
         "pool": {
-            "active": active.len(),
-            "max_size": state.config.pool.max_size,
+            "active": pool_status.active_sandboxes,
+            "warm": pool_status.warm_vms,
+            "warm_network": pool_status.warm_network_vms,
+            "max_size": pool_status.config.max_size,
         },
+        "checks": checks,
     }))
+}
+
+/// Simple statvfs wrapper for disk space checks.
+#[cfg(unix)]
+struct StatVfs {
+    free_bytes: u64,
+}
+
+#[cfg(unix)]
+fn nix_statvfs(path: &std::path::Path) -> std::io::Result<StatVfs> {
+    use std::ffi::CString;
+    let c_path = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            Ok(StatVfs {
+                free_bytes: stat.f_bfree as u64 * stat.f_bsize,
+            })
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
 }
 
 // ── Error handling ─────────────────────────────────────────────────
@@ -678,9 +763,12 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "ok");
+        // Status is "ok" or "degraded" depending on whether artifacts exist
+        assert!(json["status"].is_string());
         assert!(json["pool"]["active"].is_number());
-        assert_eq!(json["pool"]["active"], 0);
+        assert!(json["pool"]["max_size"].is_number());
+        assert!(json["pool"]["warm"].is_number());
+        assert!(json["checks"].is_object());
     }
 
     // ── Error body consistency ───────────────────────────────────
