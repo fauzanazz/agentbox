@@ -18,3 +18,9 @@ class SandboxInfo(BaseModel):
     status: str
     config: dict
     created_at: str
+
+
+class PortForwardInfo(BaseModel):
+    guest_port: int
+    host_port: int
+    local_address: str

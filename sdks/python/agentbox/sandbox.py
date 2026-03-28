@@ -7,7 +7,7 @@ from typing import AsyncIterator
 import websockets
 
 from .client import AgentBoxClient
-from .types import ExecResult, FileEntry, SandboxInfo
+from .types import ExecResult, FileEntry, PortForwardInfo, SandboxInfo
 
 
 class Sandbox:
@@ -25,9 +25,10 @@ class Sandbox:
         vcpus: int = 2,
         network: bool = False,
         timeout: int = 3600,
+        api_key: str | None = None,
     ) -> Sandbox:
         """Create a new sandbox. Boots a microVM in <300ms."""
-        client = AgentBoxClient(url)
+        client = AgentBoxClient(url, api_key=api_key)
         data = client.post(
             "/sandboxes",
             json={
@@ -38,6 +39,8 @@ class Sandbox:
             },
         )
         return cls(id=data["id"], client=client)
+
+    # ── Command execution ───────────────────────────────────────
 
     def exec(self, command: str, timeout: int = 30) -> ExecResult:
         """Execute a command and wait for completion."""
@@ -50,7 +53,11 @@ class Sandbox:
     async def exec_stream(self, command: str) -> AsyncIterator[dict]:
         """Execute with streaming output via WebSocket."""
         ws_url = self._client.ws_url(f"/sandboxes/{self.id}/ws")
-        async with websockets.connect(ws_url) as ws:
+        extra_headers = {}
+        if self._client.api_key:
+            extra_headers["Authorization"] = f"Bearer {self._client.api_key}"
+
+        async with websockets.connect(ws_url, additional_headers=extra_headers) as ws:
             # Wait for ready
             msg = json.loads(await ws.recv())
             if msg.get("type") != "ready":
@@ -76,6 +83,8 @@ class Sandbox:
                 elif msg_type == "error":
                     yield {"type": "error", "message": msg["message"]}
                     break
+
+    # ── File operations ─────────────────────────────────────────
 
     def upload(self, local_path: str, remote_path: str) -> None:
         """Upload a file to the sandbox."""
@@ -109,6 +118,50 @@ class Sandbox:
         )
         return [FileEntry(**f) for f in data]
 
+    def delete_file(self, path: str) -> None:
+        """Delete a file in the sandbox."""
+        self._client.delete(
+            f"/sandboxes/{self.id}/files",
+            params={"path": path},
+        )
+
+    def mkdir(self, path: str) -> None:
+        """Create a directory in the sandbox."""
+        self._client.put(
+            f"/sandboxes/{self.id}/files",
+            params={"path": path},
+        )
+
+    # ── Signals ─────────────────────────────────────────────────
+
+    def send_signal(self, signal: int) -> None:
+        """Send a POSIX signal to the sandbox process."""
+        self._client.post(
+            f"/sandboxes/{self.id}/signal",
+            json={"signal": signal},
+        )
+
+    # ── Port forwarding ────────────────────────────────────────
+
+    def port_forward(self, guest_port: int) -> PortForwardInfo:
+        """Create a port forward from host to guest."""
+        data = self._client.post(
+            f"/sandboxes/{self.id}/ports",
+            json={"guest_port": guest_port},
+        )
+        return PortForwardInfo(**data)
+
+    def list_port_forwards(self) -> list[PortForwardInfo]:
+        """List active port forwards."""
+        data = self._client.get(f"/sandboxes/{self.id}/ports")
+        return [PortForwardInfo(**p) for p in data["ports"]]
+
+    def remove_port_forward(self, guest_port: int) -> None:
+        """Remove a port forward."""
+        self._client.delete(f"/sandboxes/{self.id}/ports/{guest_port}")
+
+    # ── Info & lifecycle ────────────────────────────────────────
+
     def info(self) -> SandboxInfo:
         """Get sandbox info."""
         data = self._client.get(f"/sandboxes/{self.id}")
@@ -140,10 +193,15 @@ class Sandbox:
         from .tools import get_tool_definitions
         return get_tool_definitions(format)
 
-    def handle_tool_call(self, tool_call: dict) -> dict:
+    def handle_tool_call(self, tool_call: dict, *, raise_on_error: bool = True) -> dict:
         """Execute an LLM tool call against this sandbox.
 
         Works with both OpenAI and Anthropic tool call formats.
+
+        Args:
+            tool_call: The tool call dict from the LLM.
+            raise_on_error: If True (default), raise exceptions on errors.
+                If False, return {"error": ...} dicts (legacy behavior).
         """
         from .tools import handle_tool_call
-        return handle_tool_call(self, tool_call)
+        return handle_tool_call(self, tool_call, raise_on_error=raise_on_error)
