@@ -1,0 +1,9 @@
+{
+  "name": "agentbox-workspace",
+  "private": true,
+  "dependencies": {
+    "typescript": "^5",
+    "tsx": "^4",
+    "@types/node": "^22"
+  }
+}

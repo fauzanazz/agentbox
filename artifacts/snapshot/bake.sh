@@ -2,16 +2,27 @@
 set -euo pipefail
 
 if [ $# -lt 2 ]; then
-    echo "Usage: $0 <arch> <output-dir>"
+    echo "Usage: $0 <arch> <output-dir> [--rootfs <name>]"
     exit 1
 fi
 
 ARCH="$1"
 OUTPUT_DIR="$2"
 
-SNAPSHOT_DIR="$(realpath "${OUTPUT_DIR}")/snapshot"
+ROOTFS_NAME=""
+if [ "${3:-}" = "--rootfs" ] && [ -n "${4:-}" ]; then
+    ROOTFS_NAME="$4"
+fi
+
+if [ -n "$ROOTFS_NAME" ]; then
+    SNAPSHOT_DIR="$(realpath "${OUTPUT_DIR}")/snapshot-${ROOTFS_NAME}"
+    ROOTFS="$(realpath "${OUTPUT_DIR}/rootfs-${ROOTFS_NAME}.ext4")"
+else
+    SNAPSHOT_DIR="$(realpath "${OUTPUT_DIR}")/snapshot"
+    ROOTFS="$(realpath "${OUTPUT_DIR}/rootfs.ext4")"
+fi
+
 VMLINUX="$(realpath "${OUTPUT_DIR}/vmlinux")"
-ROOTFS="$(realpath "${OUTPUT_DIR}/rootfs.ext4")"
 WORK_DIR="$(pwd)/build/snapshot-bake"
 
 if [ -f "${SNAPSHOT_DIR}/vmstate.bin" ]; then
@@ -19,7 +30,11 @@ if [ -f "${SNAPSHOT_DIR}/vmstate.bin" ]; then
     exit 0
 fi
 
-echo "Baking base snapshot..."
+if [ -n "$ROOTFS_NAME" ]; then
+    echo "Baking snapshot for template '${ROOTFS_NAME}'..."
+else
+    echo "Baking base snapshot..."
+fi
 
 mkdir -p "$SNAPSHOT_DIR" "$WORK_DIR"
 

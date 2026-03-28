@@ -15,6 +15,7 @@ use crate::{
 #[derive(Debug, Serialize)]
 pub struct PoolStatus {
     pub warm_vms: usize,
+    pub warm_network_vms: usize,
     pub active_sandboxes: usize,
     pub config: PoolStatusConfig,
 }
@@ -24,6 +25,7 @@ pub struct PoolStatusConfig {
     pub min_size: usize,
     pub max_size: usize,
     pub idle_timeout_secs: u64,
+    pub network_min_size: usize,
 }
 
 struct PooledSandbox {
@@ -36,6 +38,7 @@ pub struct Pool {
     guest_config: GuestConfig,
     vm_manager: Arc<VmManager>,
     available: Arc<Mutex<VecDeque<PooledSandbox>>>,
+    network_available: Arc<Mutex<VecDeque<PooledSandbox>>>,
     active: Arc<RwLock<HashMap<SandboxId, SandboxInfo>>>,
 }
 
@@ -46,12 +49,14 @@ impl Pool {
             guest_config,
             vm_manager,
             available: Arc::new(Mutex::new(VecDeque::new())),
+            network_available: Arc::new(Mutex::new(VecDeque::new())),
             active: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub async fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
         let available = self.available.clone();
+        let network_available = self.network_available.clone();
         let active = self.active.clone();
         let vm_manager = self.vm_manager.clone();
         let config = self.config.clone();
@@ -80,6 +85,25 @@ impl Pool {
                     expired
                 };
                 for ps in to_destroy {
+                    let _ = vm_manager.destroy(ps.sandbox.into_vm()).await;
+                }
+
+                let net_to_destroy = {
+                    let mut avail = network_available.lock().await;
+                    let mut expired = Vec::new();
+                    let mut i = 0;
+                    while i < avail.len() {
+                        if avail[i].pooled_at.elapsed() > idle_timeout {
+                            if let Some(ps) = avail.remove(i) {
+                                expired.push(ps);
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    expired
+                };
+                for ps in net_to_destroy {
                     let _ = vm_manager.destroy(ps.sandbox.into_vm()).await;
                 }
 
@@ -125,6 +149,56 @@ impl Pool {
                         }
                     }
                 }
+
+                // 3. Replenish network pool if needed
+                let net_avail_count = network_available.lock().await.len();
+                let active_count = active.read().await.len();
+                let avail_count = available.lock().await.len();
+                let total = net_avail_count + avail_count + active_count;
+                if net_avail_count < config.network_min_size && total < config.max_size {
+                    let defaults = SandboxConfig {
+                        memory_mb: 2048,
+                        vcpus: 2,
+                        network: true,
+                        disk_size_mb: 512,
+                        timeout_secs: 3600,
+                    };
+                    match vm_manager.create_from_snapshot(&defaults).await {
+                        Ok(vm) => {
+                            let sandbox = Sandbox::new(vm, defaults, &guest_config);
+                            let ping_timeout = Duration::from_millis(guest_config.ping_timeout_ms);
+                            let ready = tokio::time::timeout(ping_timeout, async {
+                                loop {
+                                    if sandbox.is_alive().await {
+                                        return true;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            })
+                            .await
+                            .unwrap_or(false);
+
+                            if ready {
+                                if let Err(e) = sandbox.setup_guest_network().await {
+                                    tracing::warn!("Network VM guest setup failed: {e}");
+                                    let _ = vm_manager.destroy(sandbox.into_vm()).await;
+                                } else {
+                                    network_available.lock().await.push_back(PooledSandbox {
+                                        sandbox,
+                                        pooled_at: Instant::now(),
+                                    });
+                                    tracing::debug!("Pool replenished a warm network VM");
+                                }
+                            } else {
+                                tracing::warn!("Network VM guest agent not ready, discarding");
+                                let _ = vm_manager.destroy(sandbox.into_vm()).await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Network pool replenishment failed: {e}");
+                        }
+                    }
+                }
             }
         });
 
@@ -132,13 +206,13 @@ impl Pool {
     }
 
     pub async fn claim(&self, config: SandboxConfig) -> Result<Sandbox> {
-        // Fast path: pop a warm VM that matches the requested network config
-        let pooled = {
+        // Fast path: pop a warm VM from the appropriate queue
+        let pooled = if config.network {
+            let mut avail = self.network_available.lock().await;
+            avail.pop_front().map(|ps| ps.sandbox)
+        } else {
             let mut avail = self.available.lock().await;
-            let idx = avail
-                .iter()
-                .position(|ps| ps.sandbox.config.network == config.network);
-            idx.and_then(|i| avail.remove(i).map(|ps| ps.sandbox))
+            avail.pop_front().map(|ps| ps.sandbox)
         };
 
         let sandbox = if let Some(sb) = pooled {
@@ -148,7 +222,8 @@ impl Pool {
             // Slow path: on-demand creation
             let active_count = self.active.read().await.len();
             let avail_count = self.available.lock().await.len();
-            if active_count + avail_count >= self.config.max_size {
+            let net_avail_count = self.network_available.lock().await.len();
+            if active_count + avail_count + net_avail_count >= self.config.max_size {
                 return Err(AgentBoxError::PoolExhausted);
             }
 
@@ -212,14 +287,21 @@ impl Pool {
             .try_lock()
             .map(|guard| guard.len())
             .unwrap_or(0);
+        let warm_network_vms = self
+            .network_available
+            .try_lock()
+            .map(|guard| guard.len())
+            .unwrap_or(0);
         let active_sandboxes = self.active.try_read().map(|guard| guard.len()).unwrap_or(0);
         PoolStatus {
             warm_vms,
+            warm_network_vms,
             active_sandboxes,
             config: PoolStatusConfig {
                 min_size: self.config.min_size,
                 max_size: self.config.max_size,
                 idle_timeout_secs: self.config.idle_timeout_secs,
+                network_min_size: self.config.network_min_size,
             },
         }
     }
@@ -238,6 +320,13 @@ impl Pool {
             avail.drain(..).map(|ps| ps.sandbox).collect()
         };
         for sb in to_destroy {
+            let _ = self.vm_manager.destroy(sb.into_vm()).await;
+        }
+        let net_to_destroy: Vec<_> = {
+            let mut avail = self.network_available.lock().await;
+            avail.drain(..).map(|ps| ps.sandbox).collect()
+        };
+        for sb in net_to_destroy {
             let _ = self.vm_manager.destroy(sb.into_vm()).await;
         }
         let active_count = self.active.read().await.len();
@@ -277,9 +366,11 @@ mod tests {
         let pool = test_pool();
         let status = pool.status();
         assert_eq!(status.warm_vms, 0);
+        assert_eq!(status.warm_network_vms, 0);
         assert_eq!(status.active_sandboxes, 0);
         assert_eq!(status.config.min_size, 2);
         assert_eq!(status.config.max_size, 10);
+        assert_eq!(status.config.network_min_size, 0);
     }
 
     #[tokio::test]
@@ -288,6 +379,7 @@ mod tests {
             min_size: 0,
             max_size: 0,
             idle_timeout_secs: 3600,
+            network_min_size: 0,
         };
         let vm_manager = Arc::new(VmManager::new(VmConfig::default()));
         let pool = Pool::new(pool_config, GuestConfig::default(), vm_manager);
@@ -296,6 +388,29 @@ mod tests {
             memory_mb: 512,
             vcpus: 1,
             network: false,
+            disk_size_mb: 512,
+            timeout_secs: 60,
+        };
+        let result = pool.claim(config).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AgentBoxError::PoolExhausted));
+    }
+
+    #[tokio::test]
+    async fn test_pool_claim_network_exhausted_when_max_size_zero() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 0,
+            idle_timeout_secs: 3600,
+            network_min_size: 0,
+        };
+        let vm_manager = Arc::new(VmManager::new(VmConfig::default()));
+        let pool = Pool::new(pool_config, GuestConfig::default(), vm_manager);
+
+        let config = SandboxConfig {
+            memory_mb: 512,
+            vcpus: 1,
+            network: true,
             disk_size_mb: 512,
             timeout_secs: 60,
         };
@@ -318,6 +433,7 @@ mod tests {
             min_size: 0,
             max_size: 5,
             idle_timeout_secs: 3600,
+            network_min_size: 0,
         };
         // VmManager with default (nonexistent) paths should fail during create_from_snapshot
         let vm_manager = Arc::new(VmManager::new(VmConfig::default()));

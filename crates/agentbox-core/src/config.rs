@@ -44,6 +44,7 @@ pub struct PoolConfig {
     pub min_size: usize,
     pub max_size: usize,
     pub idle_timeout_secs: u64,
+    pub network_min_size: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -93,6 +94,7 @@ impl Default for PoolConfig {
             min_size: 2,
             max_size: 10,
             idle_timeout_secs: 3600,
+            network_min_size: 0,
         }
     }
 }
@@ -153,6 +155,7 @@ mod tests {
         assert_eq!(p.min_size, 2);
         assert_eq!(p.max_size, 10);
         assert_eq!(p.idle_timeout_secs, 3600);
+        assert_eq!(p.network_min_size, 0);
     }
 
     #[test]

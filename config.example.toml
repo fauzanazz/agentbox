@@ -18,6 +18,8 @@ timeout_secs = 3600
 min_size = 2
 max_size = 10
 idle_timeout_secs = 3600
+# number of network-enabled VMs to keep warm (0 = disabled)
+network_min_size = 0
 
 [guest]
 vsock_port = 5000
